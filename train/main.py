@@ -41,9 +41,10 @@ def set_params(
     normalize_returns=False,
     bootstrap_value=False,
     keep_draws=True,
+    reward_discount=0.90,
 ):
     """Allow overriding of default parameters from scripts."""
-    global LEARNING_RATE, WEIGHT_DECAY, GRAD_NORM_CLIPPING, ENTROPY_BONUS, NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS
+    global LEARNING_RATE, WEIGHT_DECAY, GRAD_NORM_CLIPPING, ENTROPY_BONUS, NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
     LEARNING_RATE = learning_rate
     WEIGHT_DECAY = weight_decay
     GRAD_NORM_CLIPPING = grad_norm_clipping
@@ -51,6 +52,7 @@ def set_params(
     NORMALIZE_RETURNS = normalize_returns
     BOOTSTRAP_VALUE = bootstrap_value
     KEEP_DRAWS = keep_draws
+    REWARD_DISCOUNT = reward_discount
 
 
 DEVICE = None
@@ -736,11 +738,11 @@ def run_training(debug=False):
 
 
 def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-3,
-                   win_threshold=0.52):
+                   win_threshold=0.52, fname_prefix="model"):
     """Train a model using self-play."""
 
-    cp_file = "last_cp.pth"
-    best_cp_file = "best_cp.pth"
+    cp_file = fname_prefix + "_last.pth"
+    best_cp_file = fname_prefix + "_best.pth"
     DEVICE = init_device(False)
 
     # Create two copies of the model
@@ -761,7 +763,7 @@ def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100,
 
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
-    wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', "Returns st.d."],
+    wrplot = UpdatablePlot(labels=[['Win rate (against ref)', 'Entropy', "Returns st.d."],
                                    ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
 
     # ----------------- MAIN TRAINING LOOP ----------------- #
