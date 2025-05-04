@@ -26,3 +26,7 @@ execute e.g.
 
 The ``webapp/`` subdirectory contains a JavaScript applet for
 interactively playing against an ONNX exported model.
+
+If you want to play against a live version, the strongest public
+version is currently hosted in the
+[applet in the RwB post](https://c-f-h.github.io/post/implementing-rwb/#up-for-a-game).
