@@ -1,0 +1,98 @@
+.connect4-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.connect4-container .board-background {
+    fill: #0066cc;
+    stroke: #222255;
+    stroke-width: 1px;
+    rx: 15;
+    ry: 15;
+}
+
+.connect4-container svg circle {
+    pointer-events: none;
+}
+
+.connect4-container svg circle.winning-cell {
+    stroke: black;
+    stroke-width: 2;
+    filter: contrast(1.5) drop-shadow(2px 2px 4px #8686f0);
+}
+
+.connect4-container span {
+    margin: 0px 1rem;
+}
+
+.connect4-container .status {
+    font-size: 18px;
+    margin: 15px 0;
+    height: 24px;
+    font-weight: bold;
+}
+.connect4-container .board {
+    cursor: pointer;
+    width: 420px;
+    max-width: 90vw;
+}
+.connect4-container button {
+    margin-top: 20px;
+    padding: 10px 20px;
+    font-size: 16px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+.connect4-container button:hover {
+    background-color: #45a049;
+}
+.connect4-container button:disabled {
+    background-color: #6c8f6f;
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.connect4-container .column-hover {
+    fill: transparent;
+}
+.connect4-container .column-hover:hover {
+    fill: rgba(255, 255, 255, 0.2);
+}
+
+.game-layout {
+    display: flex;
+    align-items: center;
+}
+
+.valuation-bar {
+    width: 20px;
+    height: 360px;
+    background-color: #f0f0f0;
+    margin-left: 10px;
+    position: relative;
+    border: 1px solid #ccc;
+}
+
+.valuation-center-line {
+    position: absolute;
+    width: 100%;
+    height: 2px;
+    background-color: black;
+    top: 50%; /* Centered */
+    transform: translateY(-50%);
+    z-index: 1;
+}
+
+.valuation-indicator {
+    position: absolute;
+    width: 100%;
+    top: 50%; /* Start from the center */
+    height: 0%; /* Default to neutral */
+    transform-origin: top; /* Expand from the center */
+    z-index: 0;
+}

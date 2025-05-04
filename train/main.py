@@ -1,0 +1,829 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import os.path
+import numpy as np
+import matplotlib.pyplot as plt
+
+from typing import List
+
+from board import *
+from model import *
+from stats import *
+from tournament import run_fast_tournament, win_rate
+
+# Define board dimensions
+ROWS = 6
+COLS = 7
+
+CHECKPOINT = "best_model.pth"
+
+RESET_OPTIMIZER = True
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0
+
+GRAD_NORM_CLIPPING = None # 1000.0
+#ENTROPY_BONUS = 0.030   #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+ENTROPY_BONUS = 0.04       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+
+NORMALIZE_RETURNS = False       # normalize the returns per batch
+BOOTSTRAP_VALUE   = False       # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
+KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
+
+REWARD_DISCOUNT = 0.90
+
+def set_params(
+    learning_rate=1e-4,
+    weight_decay=0,
+    grad_norm_clipping=None,
+    entropy_bonus=0.05,
+    normalize_returns=False,
+    bootstrap_value=False,
+    keep_draws=True,
+):
+    """Allow overriding of default parameters from scripts."""
+    global LEARNING_RATE, WEIGHT_DECAY, GRAD_NORM_CLIPPING, ENTROPY_BONUS, NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS
+    LEARNING_RATE = learning_rate
+    WEIGHT_DECAY = weight_decay
+    GRAD_NORM_CLIPPING = grad_norm_clipping
+    ENTROPY_BONUS = entropy_bonus
+    NORMALIZE_RETURNS = normalize_returns
+    BOOTSTRAP_VALUE = bootstrap_value
+    KEEP_DRAWS = keep_draws
+
+
+DEVICE = None
+g_stats = BatchStats(["winrate", "game_length", "policy_loss", "value_loss", "entropy", "rewards_std", "advantage_std",
+                      "winrate_ref"])
+
+
+def init_device(allow_cuda):
+    global DEVICE
+    if allow_cuda:
+        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        DEVICE = torch.device("cpu")        # cuda is just slower currently
+    print(f"Using device: {DEVICE}")
+    return DEVICE
+
+
+def compute_rewards(num_moves: int, outcome: int) -> torch.Tensor:
+    if BOOTSTRAP_VALUE:
+        # bootstrapping: sparse rewards, only assigned for the winning move
+        if outcome != 0:
+            move_nr = torch.arange(num_moves, device=DEVICE)
+            return ((move_nr == (num_moves - 1)) * outcome).float()
+        else:
+            return torch.zeros((num_moves,), device=DEVICE)
+    else:
+        # Monte Carlo sampling: rewards are discounted over the game
+        move_nr = torch.arange(num_moves, device=DEVICE)
+        return (outcome * REWARD_DISCOUNT**move_nr).flip(dims=(0,))
+
+
+def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> int:
+    """Sample a move using the model's output logits."""
+    value = None
+    if epsilon > 0 and torch.rand(1).item() < epsilon:
+        # Epsilon-greedy strategy: choose a random move with probability epsilon
+        logits = torch.zeros((COLS,), dtype=torch.float32, device=DEVICE)
+    else:
+        logits = model(board)
+        if isinstance(logits, tuple):
+            logits, value = logits        # model could return (policy, value) or just policy
+    illegal_moves = torch.where(board[0, :] == 0, 0.0, -torch.inf)
+    logits += illegal_moves                     # Mask out illegal moves
+    probs = F.softmax(logits, dim=-1)           # Convert logits to probabilities
+    if output_probs:
+        np.set_printoptions(precision=3)
+        p = probs.cpu().numpy()
+        entropy = -(p * np.log(p + 1e-9)).sum()
+        print(f"Move probabilities: {p}, Entropy: {entropy:.4f}")
+        if value is not None:
+            print(f"Board state value estimate: {value.item()}")
+    move = torch.multinomial(probs, 1).item()
+    return move
+
+
+def sample_moves(model, boards: torch.Tensor) -> torch.Tensor:
+    """
+    Sample moves for a batch of boards using the model's output logits.
+
+    Returns:
+        A tensor of sampled moves, shape (N,).
+    """
+    num_games = boards.shape[0]
+    if num_games == 0:
+        return torch.empty(0, dtype=torch.long, device=DEVICE)
+
+    # Get model logits
+    value = None
+    logits = model(boards)
+    if isinstance(logits, tuple):
+        logits, value = logits  # model could return (policy, value) or just policy
+
+    # Mask out illegal moves (columns that are full)
+    illegal_moves_mask = (boards[:, 0, :] != 0)
+    logits[illegal_moves_mask] = -torch.inf
+
+    all_illegal = (logits == -torch.inf).all(dim=-1)
+    if all_illegal.any():
+        raise ValueError(f"Board(s) with no legal moves found: {torch.where(all_illegal)[0].tolist()}")
+
+    probs = F.softmax(logits, dim=-1)
+    moves = torch.multinomial(probs, 1).squeeze(-1)
+    return moves
+
+
+def sample_random_move(board: torch.Tensor) -> int:
+    """Sample a random move from the available columns."""
+    available_moves = torch.where(board[0, :] == 0)[0]
+    if available_moves.numel() == 0:
+        raise ValueError("No valid moves available.")
+    move = torch.randint(0, available_moves.numel(), (1,)).item()
+    return available_moves[move].item()
+
+
+def play_self(model, reward_discount=0.95, epsilon_greedy=0.0):
+    """Have a model play against itself."""
+    model.eval()
+    board_states, moves = [], []
+    curplayer = 1
+    with torch.no_grad():
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        while True:
+            move = sample_move(model, board, epsilon=epsilon_greedy)
+            board_states.append(board)  # no clone necessary since we do no destructive updates
+            moves.append(move)
+            board, win = make_move_and_check(board, move)
+
+            if win:
+                num_moves = len(board_states)
+                move_nr = torch.arange(num_moves)
+                rewards = ((-1.0)**move_nr * reward_discount**(move_nr // 2))
+                rewards = rewards.flip(dims=(0,))
+                g_stats.add('winrate', 1 if curplayer == 1 else 0)      # note: here this simply means "player 1 wins", win rate is meaningless in selfplay
+                return board_states, moves, rewards
+
+            elif torch.all(board[0, :] != 0):  # Check if the top row is full - draw
+                g_stats.add('winrate', 0.5)
+                if KEEP_DRAWS:
+                    return board_states, moves, torch.zeros((len(board_states),))
+                else:
+                    return [], [], []
+
+            board = -board
+            curplayer = 3 - curplayer
+
+
+def play_against_model(model, opponentmodel, reward_discount=0.95, epsilon_greedy=0.0):
+    """Have a model play against a frozen opponent model."""
+    model.eval()
+    opponentmodel.eval()
+    board_states, moves = [], []
+
+    curplayer = torch.randint(1, 3, (1,)).item() # Randomly choose starting player
+
+    with torch.no_grad():
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        while True:
+            if curplayer == 1:
+                move = sample_move(model, board, epsilon=epsilon_greedy)
+                board_states.append(board)  # no clone necessary since we do no destructive updates
+                moves.append(move)
+            else:
+                move = sample_move(opponentmodel, board)
+            board, win = make_move_and_check(board, move)
+
+            if win:
+                num_moves = len(board_states)
+                move_nr = torch.arange(num_moves)
+                R = 1.0 if curplayer == 1 else -1.0
+                rewards = R * reward_discount**move_nr
+                rewards = rewards.flip(dims=(0,))
+                g_stats.add('winrate', 1 if curplayer == 1 else 0)
+                return board_states, moves, rewards
+
+            elif torch.all(board[0, :] != 0):  # Check if the top row is full - draw
+                g_stats.add('winrate', 0.5)
+                if KEEP_DRAWS:
+                    return board_states, moves, torch.zeros((len(board_states),))
+                else:
+                    return [], [], []
+
+            board = -board
+            curplayer = 3 - curplayer # Switch players
+
+
+def play_parallel_with_results(model1, model2, track_player, num_games):
+    """Have two models play against each other. Returns all board states, moves, and rewards for player `track_player`."""
+    model1.eval()
+    model2.eval()
+    
+    all_board_states = [ [] for _ in range(num_games) ]
+    all_moves        = [ [] for _ in range(num_games) ]
+    all_rewards      = [ None for _ in range(num_games) ]
+    
+    with torch.no_grad():
+        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
+        moves = torch.zeros((num_games,), dtype=torch.int64, device=DEVICE)
+
+        curplayer = 0
+
+        while torch.any(active):
+
+            iact = torch.where(active)[0]
+            moves[iact] = sample_moves(model1, board[iact])
+            
+            for i in iact:
+                move = moves[i].item()
+
+                if curplayer == track_player:
+                    # Store the board state and chosen move for the player we are tracking
+                    all_board_states[i].append(board[i].clone())
+                    all_moves[i].append(move)
+
+                # Make the move and check for win
+                board[i], win = make_move_and_check(board[i], move)
+
+                if win:
+                    active[i] = 0       # Game over; win
+
+                    num_moves = len(all_board_states[i])
+                    all_rewards[i] = compute_rewards(num_moves, 1 if (curplayer == track_player) else -1)
+                    g_stats.add('winrate', 1 if (curplayer == track_player) else 0)
+                    g_stats.add('game_length', num_moves)
+
+                elif torch.all(board[i, 0, :] != 0):  # Check if the top row is full   
+                    active[i] = 0       # Game over; draw
+
+                    if KEEP_DRAWS:
+                        num_moves = len(all_board_states[i])
+                        all_rewards[i] = compute_rewards(num_moves, 0)
+                    else:
+                        all_board_states[i] = []
+                        all_moves[i] = []
+
+                    g_stats.add('winrate', 0.5)
+                    g_stats.add('game_length', num_moves)
+
+            # Flip the board state for the next player
+            board = -board      # also flips inactive, but it doesn't matter
+            model1, model2 = model2, model1 # Swap models for the next turn
+            curplayer = 1 - curplayer       # toggle 0 <-> 1
+
+    return sum(all_board_states, []), sum(all_moves, []), torch.cat([r for r in all_rewards if r is not None])
+
+
+def play_parallel_with_results2(model1, model2, track_player, num_games):
+    """Have two models play against each other. Returns all board states, moves, and rewards for player `track_player`."""
+    model1.eval()
+    model2.eval()
+    
+    all_board_states = [ [] for _ in range(num_games) ]
+    all_moves        = [ [] for _ in range(num_games) ]
+    all_rewards      = [ None for _ in range(num_games) ]
+    
+    with torch.no_grad():
+        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        curplayer = 0
+
+        while torch.any(active):
+
+            iact = torch.where(active)[0]
+
+            # sample moves for all active boards, play them and check results
+            moves = sample_moves(model1, board[iact])
+
+            if curplayer == track_player:
+                for k, i in enumerate(iact):
+                    # Store the board state and chosen move for the player we are tracking
+                    all_board_states[i].append(board[i].clone())
+                    all_moves[i].append(moves[k].item())
+
+            # Make the moves and check for win/draw
+            board[iact], wins, draws = make_move_and_check_batch(board[iact], moves)
+
+            for k, i in enumerate(iact):
+                if wins[k].item():
+                    # Game over - win
+                    num_moves = len(all_board_states[i])
+                    all_rewards[i] = compute_rewards(num_moves, 1 if (curplayer == track_player) else -1)
+                    g_stats.add('winrate', 1 if (curplayer == track_player) else 0)
+                    g_stats.add('game_length', num_moves)
+
+                elif draws[k].item():
+                    # Game over - draw
+                    if KEEP_DRAWS:
+                        num_moves = len(all_board_states[i])
+                        all_rewards[i] = compute_rewards(num_moves, 0)
+                    else:
+                        all_board_states[i] = []
+                        all_moves[i] = []
+
+                    g_stats.add('winrate', 0.5)
+                    g_stats.add('game_length', num_moves)
+            
+            active[iact] &= ~(wins | draws) # deactivate games that are won or drawn
+
+            # Flip the board state for the next player
+            board[iact] *= -1
+            model1, model2 = model2, model1 # Swap models for the next turn
+            curplayer = 1 - curplayer       # toggle 0 <-> 1
+
+    return sum(all_board_states, []), sum(all_moves, []), torch.cat([r for r in all_rewards if r is not None])
+
+
+def play_multiple(model, num_games: int, game_func):
+    """Have a model play multiple matches. game_func is called to play one match."""
+    all_board_states = []
+    all_moves = []
+    all_rewards = []
+
+    games_played = 0
+    game_length = 0
+
+    for _ in range(num_games):
+        board_states, moves, rewards = game_func(model)
+
+        if len(board_states) > 0:
+            games_played += 1
+            game_length += len(board_states)
+
+            all_board_states.extend(board_states)
+            all_moves.extend(moves)
+            all_rewards.append(rewards)     # list of tensors
+
+    g_stats.add('game_length', game_length, games_played)
+    all_rewards = torch.cat(all_rewards, dim=0)
+    return all_board_states, all_moves, all_rewards
+
+
+def play_multiple_against_model(model, opponent, num_games: int):
+    b1, m1, r1 = play_parallel_with_results2(model, opponent, track_player=0, num_games=num_games//2)
+    b2, m2, r2 = play_parallel_with_results2(opponent, model, track_player=1, num_games=num_games//2)
+    return b1 + b2, m1 + m2, torch.cat((r1, r2))
+
+
+def dump_move_info(model, board_states, moves, rewards):
+    for i in range(len(board_states)):
+        pretty_print_board(board_states[i])
+        print(move_entropy(model, board_states[i]))
+        print(f"Action: {moves[i]}, Reward: {rewards[i]}")
+
+def play(model1, model2, output=False):
+    """Have two models play against each other."""
+    model1.eval()
+    model2.eval()
+    winner = 1
+    moves = []
+    with torch.no_grad():
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        while True:
+            if output:
+                pretty_print_board(board if winner == 1 else -board, indent = (winner - 1) * 20)
+
+            move = sample_move(model1, board, output_probs=output)
+            moves.append(move)
+
+            if output:
+                print(f"Model {winner} plays: {move}")
+
+            board, win = make_move_and_check(board, move)
+
+            if win:
+                print('Move list:', moves)
+                return winner
+
+            elif torch.all(board[0, :] != 0):  # Check if the top row is full   
+                print('Move list:', moves)
+                return 0    # draw
+
+            board = -board
+            winner = 3 - winner
+            model1, model2 = model2, model1 # Swap models for the next turn
+
+
+def play_parallel(model1, model2, num_games):
+    """Have two models play num_games against each other in parallel.
+    Returns (model 1 wins, model 2 wins, draws)."""
+    model1.eval()
+    model2.eval()
+    
+    with torch.no_grad():
+        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        winner = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        while torch.any(active):
+
+            moves = sample_moves(model1, board)
+
+            for i in range(num_games):
+                if not active[i]:
+                    continue
+                board[i], win = make_move_and_check(board[i], moves[i].item())
+                if win:
+                    active[i] = 0
+                elif torch.all(board[i, 0, :] != 0):  # Check if the top row is full   
+                    active[i] = 0
+                    winner[i] = 0
+
+            board = -board      # also flips inactive, but it doesn't matter
+            iact = torch.where(active)[0]
+            winner[iact] = 3 - winner[iact]     # change potential winner for next round in active games
+            
+            model1, model2 = model2, model1 # Swap models for the next turn
+    
+    return (winner == 1).sum().item(), (winner == 2).sum().item(), (winner == 0).sum().item()
+
+def play_parallel2(model1, model2, num_games):
+    """Have two models play num_games against each other in parallel.
+    Returns (model 1 wins, model 2 wins, draws)."""
+    model1.eval()
+    model2.eval()
+    
+    with torch.no_grad():
+        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        winner = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
+        board  = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
+
+        iact = torch.where(active)[0]
+        while torch.any(active):
+
+            moves = sample_moves(model1, board[iact])
+            board[iact], wins, draws = make_move_and_check_batch(board[iact], moves)
+
+            active[iact] &= ~(wins | draws) # deactivate games that are won or drawn
+            winner[iact[draws]] = 0         # set winner to 0 for drawn games
+
+            board[iact] *= -1
+            iact = torch.where(active)[0]
+            winner[iact] = 3 - winner[iact]     # change potential winner for next round in active games
+            
+            model1, model2 = model2, model1 # Swap models for the next turn
+    
+    return (winner == 1).sum().item(), (winner == 2).sum().item(), (winner == 0).sum().item()
+
+
+def mask_invalid_moves_batch(boards: torch.Tensor, logits: torch.Tensor, mask_value=-torch.inf):
+    illegal_mask = torch.where(boards[:, 0, :] == 0, 0.0, mask_value)     # (B, C)
+    return logits + illegal_mask                           # (B, C)
+
+
+def update_policy(
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    in_board_states: List[torch.Tensor],
+    in_actions: List[int],
+    in_returns: torch.Tensor, # contains discounted reward G_t or sparse reward for each step t
+    value_loss_weight: float = 0.5,
+    debug: bool = False
+) -> tuple:
+    """
+    Updates the policy model using the REINFORCE algorithm, assuming the
+    'returns' list already contains the calculated return (e.g., G_t) for each step.
+
+    Args:
+        model: The policy network (e.g., Connect4MLP instance) to be trained.
+        optimizer: The optimizer instance (e.g., Adam) for the model.
+        board_states: List of board state tensors for the episode.
+        actions: List of actions (column indices) taken during the episode.
+        returns: List of pre-calculated returns (e.g., discounted G_t) for each step,
+                 expected to be between -1 and 1. Assumes non-zero values for non-draws.
+
+    Returns:
+        The calculated loss value for this episode (0.0 if returns list is empty).
+    """
+    num_steps = len(in_board_states)
+    if num_steps == 0: return 0.0
+    
+    device = next(model.parameters()).device
+    
+    # Convert inputs to tensors
+    states = torch.stack(in_board_states).to(device)            # (B, R, C)
+    actions = torch.tensor(in_actions, dtype=torch.int64, device=device) # (B,)
+    returns = in_returns.to(device)                             # (B,)
+    assert(states.shape[0] == returns.shape[0] == actions.shape[0])
+    assert(states.shape[1:] == (ROWS, COLS))
+    
+    # Normalize returns
+    returns_std = torch.std(returns)
+    g_stats.add('rewards_std', returns_std.item())
+    if NORMALIZE_RETURNS:
+        returns_mean = torch.mean(returns)
+        returns = (returns - returns_mean) / (returns_std + 1e-8)
+    
+    model.train()
+
+    # compute model outputs for the batch
+    logits = model(states)
+    
+    value, value_loss = None, 0.0
+    if isinstance(logits, tuple):              # check for presence of value head
+        logits, value = logits
+
+    # mask out illegal moves and compute logprobs of the actually taken actions
+    masked_logits = mask_invalid_moves_batch(states, logits, mask_value=-1e9)  # (B, C)      # use finite mask instead of -inf to avoid nans in entropy
+    log_probs = F.log_softmax(masked_logits, dim=1)                # (B, C)
+    entropy = -(log_probs * torch.exp(log_probs)).sum(1)           # (B,)
+    log_probs_taken = torch.gather(log_probs, dim=1, index=actions.unsqueeze(1)).squeeze(1)      # (B, C) -> (B, 1) -> (B,)  (choose logprobs of actually taken actions)
+
+
+    if value is not None:
+        if NORMALIZE_RETURNS:
+            raise Exception('Disable NORMALIZE_RETURNS when value head is used!')
+        
+        if BOOTSTRAP_VALUE:
+            # Actor-Critic (A2C): use bootstrapping to improve value estimate and for advantage calculation
+
+            # get new board states resulting from the moves we made
+            new_states = make_moves_batch(states, actions)
+            # Since the value function is symmetric, we ask what value the resulting state has
+            # for the opponent (-board) and take the negative value of that.
+            # TODO: evaluate only the value head for efficiency
+            V_next = -model(-new_states)[1].detach()
+
+            # check for terminal state (move won the game, or the game is drawn)
+            is_terminal = (returns == 1) | is_board_full_batch(new_states)
+            # Important: the value function never sees terminal states during its training.
+            # So its output for such states is most likely garbage, and we zero it out.
+            V_next[is_terminal] = 0.0
+            
+            # the -1 signal from losses is not a real move return
+            real_returns = torch.maximum(returns, torch.zeros_like(returns))
+
+            # bootstrapping: target value is reward from this move + discounted value of next state
+            y_target = real_returns + REWARD_DISCOUNT * V_next
+            y_target[returns == -1] = -REWARD_DISCOUNT
+            
+            # we weight winning moves with 10.0 since they are an important signal and rare
+            weight = torch.ones_like(returns)
+            weight[returns == 1]  = 10.0
+            weight[returns == -1] = 7.5
+            
+            value_loss = F.mse_loss(value, y_target, weight=weight, reduction='sum')
+            advantage = (y_target - value).detach()
+
+            if debug:
+                for i in range(states.shape[0]):
+                    pretty_print_board(states[i])
+                    print(f"terminal: {is_terminal[i].item()}, move: {actions[i].item()}, return: {returns[i].item()}, V(s_next): {V_next[i].item():.4f}, y_target: {y_target[i].item():.4f}, value: {value[i].item():.4f}, advantage: {advantage[i].item():.4f}, value_loss: {advantage[i].item()**2:.4f}, weight: {weight[i].item():.1f}, chance: {torch.exp(log_probs_taken[i]):.2f}")
+                    print()
+                import sys
+                sys.exit(0)
+
+        else:
+            # reinforce with baseline: estimate value from direct Monte Carlo samples (discounted rewards)
+            advantage = (returns - value).detach()         ## IMPORTANT! Gradients shouldn't flow back into the value network
+            value_loss = F.mse_loss(value, returns, reduction='sum')
+
+        g_stats.add('advantage_std', torch.std(advantage).item())
+
+    if debug and False:
+        for i in range(states.shape[0]):
+            pretty_print_board(states[i])
+            print(log_probs[i])
+            print(torch.exp(log_probs[i]))
+            print(f"Action: {actions[i]}, Reward: {returns[i]}, Value: {value[i]}, Advantage: {advantage[i]}, Logprob(taken): {log_probs_taken[i]}")
+            print()
+
+    # --- Calculate Policy Loss ---
+    # Loss = - Σ [ G_t * log π(a_t | s_t) ]
+    weighting = advantage if value is not None else returns
+    policy_loss = -(weighting * log_probs_taken).sum()
+    
+    # --- Perform Gradient Update ---
+    optimizer.zero_grad()
+    
+    # add up loss contributions
+    total_loss = policy_loss + value_loss_weight * value_loss
+    if ENTROPY_BONUS > 0:
+        total_loss -= ENTROPY_BONUS * entropy.sum()
+    
+    total_loss.backward()
+
+    if GRAD_NORM_CLIPPING:
+        nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
+    gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
+    print(f'norm(grad) = {gradnorm:.4f}')
+
+    optimizer.step()            # Update model weights
+
+    if debug and False:
+        print(" ------ after update ------ ")
+        model.eval()
+        with torch.no_grad():
+            for i in [-2]: #range(len(board_states)):
+                pretty_print_board(in_board_states[i])
+                print('Entropy:', move_entropy(model, in_board_states[i]))
+                print(f"Action: {in_actions[i]}, Reward: {in_returns[i]}")
+
+    bs = states.shape[0]         # batch size
+    if value_loss:
+        return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()      # report mean so as not to vary with batch size
+    else:
+        return policy_loss.item() / bs, 0.0, entropy.mean().item()
+
+
+def show_winrate(model1, model2, num_games=300):
+    wr, dr = win_rate(model1, model2, num_games=num_games)
+    print(f"Win rate: {100*wr:.2f}%  Draw rate: {100*dr:.2f}%")
+    return
+
+
+def show_tournament(all_models, model_names, num_games=300):
+    final_ratings = run_fast_tournament(
+        models=all_models,
+        num_rounds=num_games,
+        model_names=model_names,
+    )
+    
+    if final_ratings:
+        print()
+        rank = 1
+        for name, wins in final_ratings.items():
+            print(f" {rank}. {name:<15} -- {wins} wins")
+            rank += 1
+    else:
+        print("No results.")
+
+
+def move_entropy(model, board: torch.Tensor) -> float:
+    """Calculate the entropy of the model's move distribution."""
+    model.eval()
+    with torch.no_grad():
+        logits = model(board)
+        if isinstance(logits, tuple): logits = logits[0]
+        probs = F.softmax(logits, dim=-1)
+        print(f"Move logprobs: {torch.log(probs)}")
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8)) # Add small value to avoid log(0)
+        return entropy.item()
+
+
+
+def run_training(debug=False):
+    #model = Connect4CNN_MLP_Value_v3()
+    #model = Connect4CNN_MLP_Value_v2(num_filters1=32, num_filters2=64, hidden_fc_size=128, num_hidden_layers=3, value_fc_size=64).to(DEVICE)
+    model = Connect4CNN_Mk4(value_head=True).to(DEVICE)
+
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    #optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+
+    if CHECKPOINT and os.path.exists(CHECKPOINT):
+        print(f"Loading model from {CHECKPOINT}")
+        checkpoint = torch.load(CHECKPOINT, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+    print("Starting move entropy:", move_entropy(model, board))
+
+    all_models = [
+        model,
+        load_frozen_model('A2C-v2:model-a2c-cp3.pth').to(DEVICE),
+        load_frozen_model('cur').to(DEVICE),
+        RandomPunisher()
+    ]
+    model_names = ["cur", "Checkpoint", "CNN-3", "First", "RandPunish"]
+    ref_model = all_models[1]
+
+    wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', 'Rewards st.d.'],
+                                   ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
+
+    # ----------------- MAIN TRAINING LOOP ----------------- #
+    while True:
+        num_batches = 400
+        num_games = 50
+        for i in range(num_batches):
+            random_opponent = torch.randint(1, 3, (1,)).item()
+            board_states, actions, rewards = play_multiple_against_model(model, all_models[random_opponent], num_games=num_games)
+
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, debug=debug)
+            g_stats.add('policy_loss', policy_loss)
+            g_stats.add('value_loss', value_loss)
+            g_stats.add('entropy', entropy)
+
+            if i % 20 == 19:
+                show_winrate(model, ref_model, num_games=300)
+                g_stats.aggregate()
+                wrplot.update_from(g_stats, [
+                    'winrate', 'entropy', 'rewards_std',
+                    'policy_loss', 'value_loss', 'advantage_std']
+                )
+                print(f"Batch {i+1} / {num_batches} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
+            wrplot.poll()
+
+        print(f"\nTraining done.")
+
+        if CHECKPOINT:
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }, CHECKPOINT)
+            print(f'Model saved to {CHECKPOINT}')
+
+        play(ref_model, model, output=True)
+        #show_tournament(all_models, model_names, num_games=300)
+
+
+def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-3,
+                   win_threshold=0.52):
+    """Train a model using self-play."""
+
+    cp_file = "last_cp.pth"
+    best_cp_file = "best_cp.pth"
+    DEVICE = init_device(False)
+
+    # Create two copies of the model
+    model = model_constructor().to(DEVICE)
+    model_cp = model_constructor().to(DEVICE)
+
+    if os.path.exists(cp_file):
+        print(f"Loading model from {cp_file}")
+        checkpoint = torch.load(cp_file, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model_cp.load_state_dict(model.state_dict())  # Copy the model state to the checkpoint model
+    if os.path.exists(best_cp_file):
+        print(f"Loading best model from {best_cp_file}")
+        checkpoint = torch.load(best_cp_file, map_location=DEVICE)
+        model_cp.load_state_dict(checkpoint['model_state_dict'])
+
+    ref_model = RandomPunisher().to(DEVICE)
+
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+
+    wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', "Returns st.d."],
+                                   ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
+
+    # ----------------- MAIN TRAINING LOOP ----------------- #
+    epoch = 0
+    while True:
+        for batchnr in range(batches_per_epoch):
+
+            board_states, actions, returns = play_multiple_against_model(model, model_cp, num_games=games_per_batch)
+
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, returns)
+            g_stats.add('policy_loss', policy_loss)
+            g_stats.add('value_loss', value_loss)
+            g_stats.add('entropy', entropy)
+
+            if batchnr % 20 == 19:
+                wr, dr = win_rate(model, ref_model, num_games=100)
+                g_stats.add('winrate_ref', wr)
+                g_stats.aggregate()
+                wrplot.update_from(g_stats, [
+                    'winrate_ref', 'entropy', 'rewards_std',
+                    'policy_loss', 'value_loss', 'advantage_std'
+                ])
+                print(f"Batch {batchnr+1} / {batches_per_epoch} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
+            wrplot.poll()
+
+        # End of epoch; save model and create new checkpoint if performance improved
+        epoch += 1
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict()
+        }, cp_file)
+        if g_stats.last('winrate') > win_threshold:
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }, best_cp_file)
+            model_cp.load_state_dict(model.state_dict())  # Copy the model state to the checkpoint model
+            print(f"\nEpoch {epoch} done. New best model saved to {best_cp_file}.")
+        else:
+            print(f"\nEpoch {epoch} done.")
+
+        show_winrate(model, ref_model, num_games=300)
+
+
+if __name__ == "__main__":
+    init_device(False)
+
+    #constr = SimpleMLPModel
+    #constr = lambda: Connect4CNN_MLP(num_filters1=32, num_filters2=64, hidden_fc_size=128, num_hidden_layers=3, output_size=OUTPUT_SIZE)
+    constr = lambda: Connect4CNN_Mk4(value_head=True)
+
+    self_play_loop(constr, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-5)
+
+    #import pyinstrument
+    #profiler = None #pyinstrument.Profiler()
+    #profiler.start()
+
+    #import sys
+    #debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+    #run_training(debug=debug)
+
+    #if profiler:
+    #    profiler.stop()
+    #    profiler.output_html()
+    #    profiler.open_in_browser()
