@@ -1,6 +1,6 @@
 # Connect-Zero: Reinforcement Learning from Scratch
 
-![alt text](https://c-f-h.github.io/post/connect-zero/screenshot.png#center)
+<img src="https://c-f-h.github.io/post/connect-zero/screenshot.png" width="200">
 
 This repository implements Reinforcement Learning (RL) techniques from
 scratch for the game of Connect 4.
