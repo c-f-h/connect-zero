@@ -16,24 +16,22 @@ class SimpleMLPModel(nn.Module):
     """Create a simple MLP model for Connect4."""
     def __init__(self):
         super().__init__()
-        self.layers = nn.ModuleList([
+        self.layers = nn.Sequential(
             nn.Flatten(),
             nn.Linear(ROWS * COLS, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, COLS)
-        ])
+        )
     
     def forward(self, x):
         # Store original shape and determine batch size
         original_shape = x.shape
         if x.ndim == 2:
             x = x.unsqueeze(0)
-        x = x.float()  # Ensure input is float32
 
-        for layer in self.layers:
-            x = layer(x)
+        x = self.layers(x.float())
 
         # If the original input was a single instance, remove the batch dimension
         if len(original_shape) == 2:
