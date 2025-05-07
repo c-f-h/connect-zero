@@ -19,19 +19,20 @@ COLS = 7
 
 CHECKPOINT = "best_model.pth"
 
-RESET_OPTIMIZER = True
+RESET_OPTIMIZER = False
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0
 
 GRAD_NORM_CLIPPING = None # 1000.0
 #ENTROPY_BONUS = 0.030   #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-ENTROPY_BONUS = 0.04       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+ENTROPY_BONUS = 0.05       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+VALUE_LOSS_WEIGHT = 5.0
 
 NORMALIZE_RETURNS = False       # normalize the returns per batch
-BOOTSTRAP_VALUE   = False       # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
+BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
 KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
 
-REWARD_DISCOUNT = 0.90
+REWARD_DISCOUNT = 0.95
 
 def set_params(
     learning_rate=1e-4,
@@ -486,7 +487,6 @@ def update_policy(
     in_board_states: List[torch.Tensor],
     in_actions: List[int],
     in_returns: torch.Tensor, # contains discounted reward G_t or sparse reward for each step t
-    value_loss_weight: float = 0.5,
     debug: bool = False
 ) -> tuple:
     """
@@ -606,9 +606,7 @@ def update_policy(
     optimizer.zero_grad()
     
     # add up loss contributions
-    total_loss = policy_loss + value_loss_weight * value_loss
-    if ENTROPY_BONUS > 0:
-        total_loss -= ENTROPY_BONUS * entropy.sum()
+    total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
     
     total_loss.backward()
 
@@ -671,13 +669,8 @@ def move_entropy(model, board: torch.Tensor) -> float:
 
 
 
-def run_training(debug=False):
-    #model = Connect4CNN_MLP_Value_v3()
-    #model = Connect4CNN_MLP_Value_v2(num_filters1=32, num_filters2=64, hidden_fc_size=128, num_hidden_layers=3, value_fc_size=64).to(DEVICE)
-    model = Connect4CNN_Mk4(value_head=True).to(DEVICE)
-
+def train_against_opponents(model, opponents, debug=False):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    #optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
 
     if CHECKPOINT and os.path.exists(CHECKPOINT):
         print(f"Loading model from {CHECKPOINT}")
@@ -689,25 +682,16 @@ def run_training(debug=False):
     board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
     print("Starting move entropy:", move_entropy(model, board))
 
-    all_models = [
-        model,
-        load_frozen_model('A2C-v2:model-a2c-cp3.pth').to(DEVICE),
-        load_frozen_model('cur').to(DEVICE),
-        RandomPunisher()
-    ]
-    model_names = ["cur", "Checkpoint", "CNN-3", "First", "RandPunish"]
-    ref_model = all_models[1]
-
     wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', 'Rewards st.d.'],
                                    ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
 
     # ----------------- MAIN TRAINING LOOP ----------------- #
     while True:
-        num_batches = 400
+        num_batches = 100
         num_games = 50
         for i in range(num_batches):
-            random_opponent = torch.randint(1, 3, (1,)).item()
-            board_states, actions, rewards = play_multiple_against_model(model, all_models[random_opponent], num_games=num_games)
+            random_opponent = torch.randint(0, len(opponents), (1,)).item()
+            board_states, actions, rewards = play_multiple_against_model(model, opponents[random_opponent], num_games=num_games)
 
             policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, debug=debug)
             g_stats.add('policy_loss', policy_loss)
@@ -715,16 +699,14 @@ def run_training(debug=False):
             g_stats.add('entropy', entropy)
 
             if i % 20 == 19:
-                show_winrate(model, ref_model, num_games=300)
+                show_winrate(model, opponents[0], num_games=300)
                 g_stats.aggregate()
                 wrplot.update_from(g_stats, [
                     'winrate', 'entropy', 'rewards_std',
                     'policy_loss', 'value_loss', 'advantage_std']
                 )
                 print(f"Batch {i+1} / {num_batches} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
-            wrplot.poll()
-
-        print(f"\nTraining done.")
+            #wrplot.poll()
 
         if CHECKPOINT:
             torch.save({
@@ -733,8 +715,7 @@ def run_training(debug=False):
             }, CHECKPOINT)
             print(f'Model saved to {CHECKPOINT}')
 
-        play(ref_model, model, output=True)
-        #show_tournament(all_models, model_names, num_games=300)
+        play(opponents[0], model, output=True)
 
 
 def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-3,
@@ -743,7 +724,9 @@ def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100,
 
     cp_file = fname_prefix + "_last.pth"
     best_cp_file = fname_prefix + "_best.pth"
-    DEVICE = init_device(False)
+    global DEVICE
+    if DEVICE is None:
+        DEVICE = init_device(False)
 
     # Create two copies of the model
     model = model_constructor().to(DEVICE)
@@ -787,7 +770,7 @@ def self_play_loop(model_constructor, games_per_batch=50, batches_per_epoch=100,
                     'policy_loss', 'value_loss', 'advantage_std'
                 ])
                 print(f"Batch {batchnr+1} / {batches_per_epoch} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
-            wrplot.poll()
+            #wrplot.poll()
 
         # End of epoch; save model and create new checkpoint if performance improved
         epoch += 1
@@ -813,17 +796,23 @@ if __name__ == "__main__":
 
     #constr = SimpleMLPModel
     #constr = lambda: Connect4CNN_MLP(num_filters1=32, num_filters2=64, hidden_fc_size=128, num_hidden_layers=3, output_size=OUTPUT_SIZE)
-    constr = lambda: Connect4CNN_Mk4(value_head=True)
-
-    self_play_loop(constr, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-5)
+    #constr = lambda: Connect4CNN_Mk4(value_head=True)
 
     #import pyinstrument
-    #profiler = None #pyinstrument.Profiler()
+    #profiler = pyinstrument.Profiler()
     #profiler.start()
 
-    #import sys
-    #debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
-    #run_training(debug=debug)
+    #self_play_loop(constr, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-5)
+
+    import sys
+    debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+
+    model = Connect4CNN_Mk4(value_head=True)
+    opponents = [
+        load_frozen_model('CNN-Mk4:model-mk4-rwb-cp3.pth').to(DEVICE),
+    ]
+
+    train_against_opponents(model, opponents, debug=debug)
 
     #if profiler:
     #    profiler.stop()

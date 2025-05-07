@@ -1,9 +1,10 @@
 ########## Example 3: Self-play using REINFORCE with baseline ##########
 
-from main import set_params, self_play_loop
+from main import set_params, self_play_loop, init_device
 from model import Connect4CNN_Mk4
 
 if __name__ == "__main__":
+    init_device(False)
     set_params(
         entropy_bonus=0.05,
         reward_discount=0.90,
