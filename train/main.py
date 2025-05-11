@@ -19,37 +19,41 @@ COLS = 7
 
 CHECKPOINT = "best_model.pth"
 
-RESET_OPTIMIZER = False
-LEARNING_RATE = 1e-4
+RESET_OPTIMIZER = True
+LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0
 
 GRAD_NORM_CLIPPING = None # 1000.0
 #ENTROPY_BONUS = 0.030   #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-ENTROPY_BONUS = 0.05       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-VALUE_LOSS_WEIGHT = 5.0
+ENTROPY_BONUS = 0.01       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+VALUE_LOSS_WEIGHT = 0.5
 
 NORMALIZE_RETURNS = False       # normalize the returns per batch
+NORMALIZE_ADVANTAGE = False       # normalize the advantage estimate per batch
 BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
 KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
 
-REWARD_DISCOUNT = 0.95
+REWARD_DISCOUNT = 0.97
 
 def set_params(
     learning_rate=1e-4,
     weight_decay=0,
     grad_norm_clipping=None,
     entropy_bonus=0.05,
+    value_loss_weight=0.5,
     normalize_returns=False,
     bootstrap_value=False,
     keep_draws=True,
     reward_discount=0.90,
 ):
     """Allow overriding of default parameters from scripts."""
-    global LEARNING_RATE, WEIGHT_DECAY, GRAD_NORM_CLIPPING, ENTROPY_BONUS, NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
+    global LEARNING_RATE, WEIGHT_DECAY, GRAD_NORM_CLIPPING, ENTROPY_BONUS, VALUE_LOSS_WEIGHT
+    global NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
     LEARNING_RATE = learning_rate
     WEIGHT_DECAY = weight_decay
     GRAD_NORM_CLIPPING = grad_norm_clipping
     ENTROPY_BONUS = entropy_bonus
+    VALUE_LOSS_WEIGHT = value_loss_weight
     NORMALIZE_RETURNS = normalize_returns
     BOOTSTRAP_VALUE = bootstrap_value
     KEEP_DRAWS = keep_draws
@@ -566,10 +570,10 @@ def update_policy(
             y_target = real_returns + REWARD_DISCOUNT * V_next
             y_target[returns == -1] = -REWARD_DISCOUNT
             
-            # we weight winning moves with 10.0 since they are an important signal and rare
+            # we weight winning moves stronger since they are an important signal and rare
             weight = torch.ones_like(returns)
-            weight[returns == 1]  = 10.0
-            weight[returns == -1] = 7.5
+            weight[returns == 1]  = 2.0
+            weight[returns == -1] = 2.0
             
             value_loss = F.mse_loss(value, y_target, weight=weight, reduction='sum')
             advantage = (y_target - value).detach()
@@ -587,7 +591,8 @@ def update_policy(
             advantage = (returns - value).detach()         ## IMPORTANT! Gradients shouldn't flow back into the value network
             value_loss = F.mse_loss(value, returns, reduction='sum')
 
-        g_stats.add('advantage_std', torch.std(advantage).item())
+        advantage_std, advantage_mean = torch.std_mean(advantage)
+        g_stats.add('advantage_std', advantage_std.item())
 
     if debug and False:
         for i in range(states.shape[0]):
@@ -596,6 +601,9 @@ def update_policy(
             print(torch.exp(log_probs[i]))
             print(f"Action: {actions[i]}, Reward: {returns[i]}, Value: {value[i]}, Advantage: {advantage[i]}, Logprob(taken): {log_probs_taken[i]}")
             print()
+
+    if NORMALIZE_ADVANTAGE:
+        advantage = (advantage - advantage_mean) / (advantage_std + 1e-8)
 
     # --- Calculate Policy Loss ---
     # Loss = - Σ [ G_t * log π(a_t | s_t) ]
@@ -809,7 +817,8 @@ if __name__ == "__main__":
 
     model = Connect4CNN_Mk4(value_head=True)
     opponents = [
-        load_frozen_model('CNN-Mk4:model-mk4-rwb-cp3.pth').to(DEVICE),
+        load_frozen_model('CNN-Mk4:model-mk4-a2c-cp7.pth').to(DEVICE),
+        load_frozen_model('CNN-Mk4:exploiter-cp7.pth').to(DEVICE),
     ]
 
     train_against_opponents(model, opponents, debug=debug)

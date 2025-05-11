@@ -237,6 +237,13 @@ if __name__ == '__main__':
     boardstrings = r"""
 │             │
 │             │
+│  O   O      │
+│  O   X X O  │
+│  X   O X O  │
+│  X O X O X X│
+└─┴─┴─┴─┴─┴─┴─┘
+│             │
+│             │
 │X O          │
 │X X          │
 │O X O O      │
