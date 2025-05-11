@@ -9,8 +9,11 @@ Connect-Zero](https://c-f-h.github.io/post/connect-zero/).
 Currently it implements:
 
 - basic REINFORCE -- [blog post](https://c-f-h.github.io/post/the-reinforce-algorithm/)
-- REINFORCE with baseline --  blog post on [theory](https://c-f-h.github.io/post/reinforce-with-baseline/) and [implementation](https://c-f-h.github.io/post/implementing-rwb/)
-- A2C (Actor-Critic with TD(1) value bootstrapping) -- blog post tba
+- REINFORCE with baseline --  blog posts on [theory](https://c-f-h.github.io/post/reinforce-with-baseline/) and [implementation](https://c-f-h.github.io/post/implementing-rwb/)
+- A2C (Actor-Critic with one-step TD value bootstrapping) -- blog posts on
+  [theory](https://c-f-h.github.io/post/actor-critic/),
+  [implementation](https://c-f-h.github.io/post/implementing-a2c/), and
+  [evaluation](https://c-f-h.github.io/post/evaluating-a2c/)
 
 It also contains some utility scripts for having models play single
 games or tournaments against each other, perform pretraining,
