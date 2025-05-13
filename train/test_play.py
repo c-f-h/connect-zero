@@ -1,4 +1,4 @@
-from main import init_device, play_parallel2, play_parallel_with_results, play_parallel_with_results2
+from main import init_device, play_parallel2, play_parallel_with_results, play_parallel_with_results
 from model import RandomConnect4, load_frozen_model
 from board import pretty_print_board
 import torch
@@ -27,7 +27,7 @@ def test_play_parallel_with_results():
 
     torch.manual_seed(0)
     with profile():
-        b2, m2, r2 = play_parallel_with_results2(model, model, 0, NUM_GAMES)
+        b2, m2, r2 = play_parallel_with_results(model, model, 0, NUM_GAMES)
     assert len(b2) == ns
     for bs1, bs2 in zip(b, b2):
         assert torch.equal(bs1, bs2)

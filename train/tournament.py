@@ -212,6 +212,17 @@ def run_fast_tournament(
         )
         print(row)
 
+    # Print win table as percentages
+    ng = num_rounds * 2
+    print("\nWin Percentages:")
+    header = "     " + " ".join(f"{name[:5]:>5}" for name in name_list)
+    print(header)
+    for i, name1 in enumerate(name_list):
+        row = f"{name1[:5]:>5} " + " ".join(
+            f"{(win_table[i, j] / ng * 100):>5.1f}%" if i != j else "     " for j in range(num_models)
+        )
+        print(row)
+
     total_wins = win_table.sum(axis=1)
     
     model_wins = dict(zip(name_list, total_wins))
