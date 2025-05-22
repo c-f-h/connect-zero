@@ -37,6 +37,12 @@ KEEP_DRAWS        = True        # whether drawn games are kept in the training d
 
 REWARD_DISCOUNT = 0.98
 
+PPO_CLIP_EPSILON = 0.2
+PPO_EPOCHS = 4
+PPO_TARGET_KL = 0.01
+
+ALGORITHM = "A2C"
+
 def set_params(
     learning_rate=1e-4,
     weight_decay=0,
@@ -48,10 +54,15 @@ def set_params(
     bootstrap_value=False,
     keep_draws=True,
     reward_discount=0.90,
+    ppo_clip_epsilon=0.2,
+    ppo_epochs=4,
+    ppo_target_kl=0.01,
+    algorithm="A2C",
 ):
     """Allow overriding of default parameters from scripts."""
     global LEARNING_RATE, WEIGHT_DECAY, OPPONENT_TEMPERATURE, GRAD_NORM_CLIPPING, ENTROPY_BONUS, VALUE_LOSS_WEIGHT
     global NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
+    global PPO_CLIP_EPSILON, PPO_EPOCHS, PPO_TARGET_KL, ALGORITHM
     LEARNING_RATE = learning_rate
     WEIGHT_DECAY = weight_decay
     OPPONENT_TEMPERATURE = opponent_temperature
@@ -62,6 +73,10 @@ def set_params(
     BOOTSTRAP_VALUE = bootstrap_value
     KEEP_DRAWS = keep_draws
     REWARD_DISCOUNT = reward_discount
+    PPO_CLIP_EPSILON = ppo_clip_epsilon
+    PPO_EPOCHS = ppo_epochs
+    PPO_TARGET_KL = ppo_target_kl
+    ALGORITHM = algorithm
 
 
 DEVICE = None
@@ -437,10 +452,11 @@ def update_policy(
     in_actions: List[int],
     in_returns: torch.Tensor, # contains discounted reward G_t or sparse reward for each step t
     in_done: List[torch.Tensor],
+    algorithm: str = "A2C",  # Default to A2C for backward compatibility
     debug: bool = False
 ) -> tuple:
     """
-    Updates the policy model using the REINFORCE algorithm, assuming the
+    Updates the policy model using the REINFORCE or PPO algorithm, assuming the
     'returns' list already contains the calculated return (e.g., G_t) for each step.
 
     Args:
@@ -487,94 +503,124 @@ def update_policy(
     masked_logits = mask_invalid_moves_batch(states, logits, mask_value=-1e9)  # (B, C)      # use finite mask instead of -inf to avoid nans in entropy
     log_probs = F.log_softmax(masked_logits, dim=1)                # (B, C)
     entropy = -(log_probs * torch.exp(log_probs)).sum(1)           # (B,)
-    log_probs_taken = torch.gather(log_probs, dim=1, index=actions.unsqueeze(1)).squeeze(1)      # (B, C) -> (B, 1) -> (B,)  (choose logprobs of actually taken actions)
+    
+    log_probs_taken_old = torch.gather(log_probs, dim=1, index=actions.unsqueeze(1)).squeeze(1).detach()
 
-
-    if value is not None:
-        if NORMALIZE_RETURNS:
-            raise Exception('Disable NORMALIZE_RETURNS when value head is used!')
+    # Calculate advantage (and y_target for value loss if BOOTSTRAP_VALUE)
+    # This is done once before PPO loop or A2C update, using the policy that generated the data
+    if value is not None: # Value head is present
+        if NORMALIZE_RETURNS and BOOTSTRAP_VALUE: 
+            raise Exception('NORMALIZE_RETURNS and BOOTSTRAP_VALUE together might require careful adjustment of y_target calculation.')
         
         if BOOTSTRAP_VALUE:
-            # Actor-Critic (A2C): use bootstrapping to improve value estimate and for advantage calculation
-
-            # next value after 2 ply (only if not terminal)
             V_next = torch.roll(value.detach(), shifts=-1)  # (B,)
-
-            # for terminal states, the value is 0
             V_next[done] = 0.0
+            y_target = returns + REWARD_DISCOUNT * V_next # Target for value function
+            advantage = (y_target - value).detach()       # Advantage for policy update
+        else: # REINFORCE with baseline (or if PPO uses this for advantage)
+            y_target = returns # Target for value function is Monte Carlo return
+            advantage = (returns - value).detach()
 
-            # bootstrapping: target value is reward from this move + discounted value of next state
-            y_target = returns + REWARD_DISCOUNT * V_next
-            
-            # we weight winning moves stronger since they are an important signal and rare
-            weight = torch.ones_like(returns)
-            #weight[returns == 1]  = 2.0
-            #weight[returns == -1] = 2.0
-            
-            value_loss = F.mse_loss(value, y_target, weight=weight, reduction='sum')
-            advantage = (y_target - value).detach()
-
-            if debug:
-                for i in range(states.shape[0]):
-                    pretty_print_board(states[i])
-                    print(f"terminal: {done[i].item()}, move: {actions[i].item()}, return: {returns[i].item()}, V(s_next): {V_next[i].item():.4f}, y_target: {y_target[i].item():.4f}, value: {value[i].item():.4f}, advantage: {advantage[i].item():.4f}, value_loss: {advantage[i].item()**2:.4f}, weight: {weight[i].item():.1f}, chance: {torch.exp(log_probs_taken[i]):.2f}")
-                    print()
-                import sys
-                sys.exit(0)
-
-        else:
-            # reinforce with baseline: estimate value from direct Monte Carlo samples (discounted rewards)
-            advantage = (returns - value).detach()         ## IMPORTANT! Gradients shouldn't flow back into the value network
-            value_loss = F.mse_loss(value, returns, reduction='sum')
+        initial_value_loss = F.mse_loss(value, y_target, reduction='sum')
 
         advantage_std, advantage_mean = torch.std_mean(advantage)
         g_stats.add('advantage_std', advantage_std.item())
+        if NORMALIZE_ADVANTAGE:
+            advantage = (advantage - advantage_mean) / (advantage_std + 1e-8)
+    else: # No value head (REINFORCE or PPO without value function)
+        advantage = returns 
+        y_target = returns 
+        initial_value_loss = torch.tensor(0.0, device=device)
 
-    if debug and False:
-        for i in range(states.shape[0]):
-            pretty_print_board(states[i])
-            print(log_probs[i])
-            print(torch.exp(log_probs[i]))
-            print(f"Action: {actions[i]}, Reward: {returns[i]}, Value: {value[i]}, Advantage: {advantage[i]}, Logprob(taken): {log_probs_taken[i]}")
-            print()
 
-    if NORMALIZE_ADVANTAGE:
-        advantage = (advantage - advantage_mean) / (advantage_std + 1e-8)
+    if algorithm == "PPO":
+        current_policy_loss = torch.tensor(0.0, device=device) 
+        current_value_loss = torch.tensor(0.0, device=device)  
+        current_entropy = entropy # Initial entropy from behavior policy
 
-    # --- Calculate Policy Loss ---
-    # Loss = - Σ [ G_t * log π(a_t | s_t) ]
-    weighting = advantage if value is not None else returns
-    policy_loss = -(weighting * log_probs_taken).sum()
-    
-    # --- Perform Gradient Update ---
-    optimizer.zero_grad()
-    
-    # add up loss contributions
-    total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
-    
-    total_loss.backward()
+        for epoch in range(PPO_EPOCHS):
+            model_output = model(states)
+            if isinstance(model_output, tuple):
+                logits_new, value_new = model_output
+            else: 
+                logits_new = model_output
+                value_new = None 
+            
+            masked_logits_new = mask_invalid_moves_batch(states, logits_new, mask_value=-1e9)
+            log_probs_new = F.log_softmax(masked_logits_new, dim=1)
+            current_entropy = -(log_probs_new * torch.exp(log_probs_new)).sum(1) 
+            log_probs_taken_new = torch.gather(log_probs_new, dim=1, index=actions.unsqueeze(1)).squeeze(1)
 
-    if GRAD_NORM_CLIPPING:
-        nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
-    gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
-    print(f'norm(grad) = {gradnorm:.4f}')
+            ratio = torch.exp(log_probs_taken_new - log_probs_taken_old)
+            
+            surr1 = ratio * advantage
+            surr2 = torch.clamp(ratio, 1.0 - PPO_CLIP_EPSILON, 1.0 + PPO_CLIP_EPSILON) * advantage
+            current_policy_loss = -torch.min(surr1, surr2).sum()
 
-    optimizer.step()            # Update model weights
+            if value_new is not None: 
+                current_value_loss = F.mse_loss(value_new, y_target, reduction='sum') 
+            else: 
+                current_value_loss = torch.tensor(0.0, device=device)
 
-    if debug and False:
-        print(" ------ after update ------ ")
-        model.eval()
-        with torch.no_grad():
-            for i in [-2]: #range(len(board_states)):
-                pretty_print_board(in_board_states[i])
-                print('Entropy:', move_entropy(model, in_board_states[i]))
-                print(f"Action: {in_actions[i]}, Reward: {in_returns[i]}")
+            total_loss_ppo = current_policy_loss + VALUE_LOSS_WEIGHT * current_value_loss - ENTROPY_BONUS * current_entropy.sum()
 
-    bs = states.shape[0]         # batch size
-    if value_loss:
-        return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()      # report mean so as not to vary with batch size
-    else:
-        return policy_loss.item() / bs, 0.0, entropy.mean().item()
+            optimizer.zero_grad()
+            total_loss_ppo.backward()
+            if GRAD_NORM_CLIPPING:
+                nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
+            optimizer.step()
+
+            with torch.no_grad():
+                approx_kl = ((ratio - 1) - torch.log(ratio)).mean()
+                if PPO_TARGET_KL is not None and approx_kl > PPO_TARGET_KL:
+                    print(f"Stopping PPO early at epoch {epoch+1} due to KL divergence: {approx_kl.item():.4f} > {PPO_TARGET_KL:.4f}")
+                    break
+        
+        policy_loss = current_policy_loss
+        value_loss = current_value_loss 
+        entropy = current_entropy 
+
+    else: # A2C or REINFORCE
+        value_loss = initial_value_loss 
+        
+        if debug and value is not None and BOOTSTRAP_VALUE: 
+            for i in range(states.shape[0]):
+                pretty_print_board(states[i])
+                print(f"terminal: {done[i].item()}, move: {actions[i].item()}, return: {returns[i].item()}, V_next: {V_next[i].item():.4f}, y_target: {y_target[i].item():.4f}, value: {value[i].item():.4f}, advantage: {advantage[i].item():.4f}, value_loss: {(y_target[i] - value[i]).item()**2:.4f}, chance: {torch.exp(log_probs_taken_old[i]):.2f}")
+                print()
+            import sys
+            sys.exit(0)
+
+        policy_loss = -(advantage * log_probs_taken_old).sum() 
+        
+        optimizer.zero_grad()
+        
+        total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
+        
+        total_loss.backward()
+
+        if GRAD_NORM_CLIPPING:
+            nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
+        
+        if algorithm != "PPO": 
+            gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
+            print(f'norm(grad) = {gradnorm:.4f}')
+
+        optimizer.step()            
+
+        if debug and False: 
+            print(" ------ after A2C/REINFORCE update ------ ")
+            model.eval()
+            with torch.no_grad():
+                for i in [-2]: 
+                    pretty_print_board(in_board_states[i])
+                    print(f"Action: {in_actions[i]}, Reward: {in_returns[i]}")
+
+    bs = states.shape[0]         
+    if not isinstance(value_loss, torch.Tensor): 
+        value_loss = torch.tensor(value_loss, device=device)
+
+    return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()
 
 
 def show_winrate(model1, model2, num_games=300):
@@ -644,7 +690,7 @@ def train_against_opponents(model, opponents, debug=False):
             print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ", end='')
             estimated_wr[random_opponent] = estimated_wr[random_opponent] * 0.90 + wr * 0.10
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, debug=debug)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, algorithm=ALGORITHM, debug=debug)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
@@ -772,7 +818,7 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
             board_states, actions, returns, done, wr = play_multiple_against_model(model, model_cp, num_games=games_per_batch)
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, returns, done)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, returns, done, algorithm=ALGORITHM)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
@@ -824,7 +870,38 @@ if __name__ == "__main__":
     #self_play_loop(constr, ref_model, games_per_batch=50, batches_per_epoch=100, learning_rate=LEARNING_RATE, win_threshold=0.60)
 
     import sys
-    debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+    
+    # Algorithm selection
+    chosen_algorithm = "A2C" # Default
+    debug_arg_present = False
+    
+    if len(sys.argv) > 1:
+        first_arg = sys.argv[1].lower()
+        if first_arg in ["ppo", "a2c"]:
+            chosen_algorithm = first_arg.upper()
+            print(f"Using algorithm: {chosen_algorithm}")
+            if len(sys.argv) > 2 and sys.argv[2].lower() == 'debug':
+                debug_arg_present = True
+        elif first_arg == 'debug':
+            debug_arg_present = True
+            print(f"Using default algorithm: A2C") # Default algorithm is A2C
+        else:
+            # Unrecognized first argument, treat as if no algorithm was specified or an invalid one.
+            # Still check for 'debug' as a potential second argument.
+            print(f"Unrecognized argument: {sys.argv[1]}. Using default algorithm: A2C")
+            if len(sys.argv) > 2 and sys.argv[2].lower() == 'debug':
+                 debug_arg_present = True
+            # If only one unrecognized arg, debug_arg_present remains False
+            # If two args, and first is unrecognized, second could be debug.
+    else:
+        print(f"Using default algorithm: A2C")
+
+    # Set the global ALGORITHM variable using set_params
+    set_params(algorithm=chosen_algorithm) 
+
+    debug = debug_arg_present
+    if debug:
+        print("Debug mode enabled.")
 
     model = Connect4CNN_Mk4(value_head=True)
     #opponents = [
