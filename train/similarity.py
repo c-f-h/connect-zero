@@ -232,7 +232,7 @@ def compute_similarity_states(models: List[torch.nn.Module]):
     print(f"Sampled {len(states)} states from the pool.")
     stacked_states = torch.stack(states)
     print(f"Stacked states shape: {stacked_states.shape}")
-    torch.save(stacked_states, "similarity_states.pt")
+    torch.save(stacked_states, "similarity_states.pth")
     return stacked_states
 
 
@@ -279,7 +279,7 @@ def compute_similarity_matrix(models: List[torch.nn.Module], verbose=False) -> n
     for m in models:
         m.eval()
 
-    similarity_states = torch.load("similarity_states.pt")
+    similarity_states = torch.load("similarity_states.pth")
     #print(f"Loaded {similarity_states.shape[0]} similarity states.")
 
     for i in range(num_models):
@@ -414,9 +414,9 @@ if __name__ == "__main__":
     #compute_similarity_states(models)
 
     #similarity_matrix = compute_similarity_matrix(models, verbose=True)
-    #torch.save(similarity_matrix, "similarity_matrix.pt")
+    #torch.save(similarity_matrix, "similarity_matrix.pth")
 
-    similarity_matrix = torch.load("similarity_matrix.pt")
+    similarity_matrix = torch.load("similarity_matrix.pth")
 
     print("Similarity Matrix:")
     print(similarity_matrix)
