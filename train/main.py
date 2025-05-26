@@ -18,8 +18,6 @@ from league import League
 ROWS = 6
 COLS = 7
 
-CHECKPOINT = "best_model.pth"
-
 RESET_OPTIMIZER = True
 LEARNING_RATE = 3e-7
 WEIGHT_DECAY = 0
@@ -30,12 +28,17 @@ GRAD_NORM_CLIPPING = None # 1000.0
 ENTROPY_BONUS = 0.050       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
 VALUE_LOSS_WEIGHT = 0.5
 
-NORMALIZE_RETURNS = False       # normalize the returns per batch
 NORMALIZE_ADVANTAGE = False       # normalize the advantage estimate per batch
 BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
 KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
 
 REWARD_DISCOUNT = 0.98
+
+PPO_CLIP_EPSILON = 0.2
+PPO_EPOCHS = 4
+PPO_TARGET_KL = 0.01
+
+ALGORITHM = "A2C"
 
 def set_params(
     learning_rate=1e-4,
@@ -44,24 +47,31 @@ def set_params(
     grad_norm_clipping=None,
     entropy_bonus=0.05,
     value_loss_weight=0.5,
-    normalize_returns=False,
     bootstrap_value=False,
     keep_draws=True,
     reward_discount=0.90,
+    ppo_clip_epsilon=0.2,
+    ppo_epochs=4,
+    ppo_target_kl=0.01,
+    algorithm="A2C",
 ):
     """Allow overriding of default parameters from scripts."""
     global LEARNING_RATE, WEIGHT_DECAY, OPPONENT_TEMPERATURE, GRAD_NORM_CLIPPING, ENTROPY_BONUS, VALUE_LOSS_WEIGHT
-    global NORMALIZE_RETURNS, BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
+    global BOOTSTRAP_VALUE, KEEP_DRAWS, REWARD_DISCOUNT
+    global PPO_CLIP_EPSILON, PPO_EPOCHS, PPO_TARGET_KL, ALGORITHM
     LEARNING_RATE = learning_rate
     WEIGHT_DECAY = weight_decay
     OPPONENT_TEMPERATURE = opponent_temperature
     GRAD_NORM_CLIPPING = grad_norm_clipping
     ENTROPY_BONUS = entropy_bonus
     VALUE_LOSS_WEIGHT = value_loss_weight
-    NORMALIZE_RETURNS = normalize_returns
     BOOTSTRAP_VALUE = bootstrap_value
     KEEP_DRAWS = keep_draws
     REWARD_DISCOUNT = reward_discount
+    PPO_CLIP_EPSILON = ppo_clip_epsilon
+    PPO_EPOCHS = ppo_epochs
+    PPO_TARGET_KL = ppo_target_kl
+    ALGORITHM = algorithm
 
 
 DEVICE = None
@@ -437,10 +447,11 @@ def update_policy(
     in_actions: List[int],
     in_returns: torch.Tensor, # contains discounted reward G_t or sparse reward for each step t
     in_done: List[torch.Tensor],
+    algorithm: str = "A2C",  # Default to A2C for backward compatibility
     debug: bool = False
 ) -> tuple:
     """
-    Updates the policy model using the REINFORCE algorithm, assuming the
+    Updates the policy model using the REINFORCE or PPO algorithm, assuming the
     'returns' list already contains the calculated return (e.g., G_t) for each step.
 
     Args:
@@ -466,13 +477,10 @@ def update_policy(
     done = torch.cat(in_done).to(device)                        # (B,)
     assert(states.shape[:1] == returns.shape == actions.shape == done.shape)
     assert(states.shape[1:] == (ROWS, COLS))
+    actions = actions.unsqueeze(1)              # (B,) -> (B, 1) for gather
     
-    # Normalize returns
-    returns_std = torch.std(returns)
-    g_stats.add('rewards_std', returns_std.item())
-    if NORMALIZE_RETURNS:
-        returns_mean = torch.mean(returns)
-        returns = (returns - returns_mean) / (returns_std + 1e-8)
+    # Log standard deviation of returns
+    g_stats.add('rewards_std', torch.std(returns).item())
     
     model.train()
 
@@ -487,79 +495,108 @@ def update_policy(
     masked_logits = mask_invalid_moves_batch(states, logits, mask_value=-1e9)  # (B, C)      # use finite mask instead of -inf to avoid nans in entropy
     log_probs = F.log_softmax(masked_logits, dim=1)                # (B, C)
     entropy = -(log_probs * torch.exp(log_probs)).sum(1)           # (B,)
-    log_probs_taken = torch.gather(log_probs, dim=1, index=actions.unsqueeze(1)).squeeze(1)      # (B, C) -> (B, 1) -> (B,)  (choose logprobs of actually taken actions)
 
+    # choose logprobs of actually taken actions: (B, C) -> (B, 1) -> (B,)
+    log_probs_taken = torch.gather(log_probs, dim=1, index=actions).squeeze(1)
 
+    # Calculate advantage (and v_target for value loss if BOOTSTRAP_VALUE)
+    # This is done once before PPO loop or A2C update, using the policy that generated the data
     if value is not None:
-        if NORMALIZE_RETURNS:
-            raise Exception('Disable NORMALIZE_RETURNS when value head is used!')
-        
         if BOOTSTRAP_VALUE:
             # Actor-Critic (A2C): use bootstrapping to improve value estimate and for advantage calculation
-
             # next value after 2 ply (only if not terminal)
             V_next = torch.roll(value.detach(), shifts=-1)  # (B,)
-
             # for terminal states, the value is 0
             V_next[done] = 0.0
-
-            # bootstrapping: target value is reward from this move + discounted value of next state
-            y_target = returns + REWARD_DISCOUNT * V_next
-            
-            # we weight winning moves stronger since they are an important signal and rare
-            weight = torch.ones_like(returns)
-            #weight[returns == 1]  = 2.0
-            #weight[returns == -1] = 2.0
-            
-            value_loss = F.mse_loss(value, y_target, weight=weight, reduction='sum')
-            advantage = (y_target - value).detach()
-
-            if debug:
-                for i in range(states.shape[0]):
-                    pretty_print_board(states[i])
-                    print(f"terminal: {done[i].item()}, move: {actions[i].item()}, return: {returns[i].item()}, V(s_next): {V_next[i].item():.4f}, y_target: {y_target[i].item():.4f}, value: {value[i].item():.4f}, advantage: {advantage[i].item():.4f}, value_loss: {advantage[i].item()**2:.4f}, weight: {weight[i].item():.1f}, chance: {torch.exp(log_probs_taken[i]):.2f}")
-                    print()
-                import sys
-                sys.exit(0)
-
+            v_target = returns + REWARD_DISCOUNT * V_next # Target for value function
+            advantage = (v_target - value).detach()       # Advantage for policy update
         else:
-            # reinforce with baseline: estimate value from direct Monte Carlo samples (discounted rewards)
-            advantage = (returns - value).detach()         ## IMPORTANT! Gradients shouldn't flow back into the value network
-            value_loss = F.mse_loss(value, returns, reduction='sum')
+            # REINFORCE with baseline - use Monte Carlo returns as value target
+            v_target = returns
+            advantage = (returns - value).detach()
 
         advantage_std, advantage_mean = torch.std_mean(advantage)
         g_stats.add('advantage_std', advantage_std.item())
+        if NORMALIZE_ADVANTAGE:
+            advantage = (advantage - advantage_mean) / (advantage_std + 1e-8)
+    else:
+        # No value head (REINFORCE without value function)
+        advantage = returns
+        v_target = returns
 
-    if debug and False:
-        for i in range(states.shape[0]):
-            pretty_print_board(states[i])
-            print(log_probs[i])
-            print(torch.exp(log_probs[i]))
-            print(f"Action: {actions[i]}, Reward: {returns[i]}, Value: {value[i]}, Advantage: {advantage[i]}, Logprob(taken): {log_probs_taken[i]}")
-            print()
+    # Weight for value loss: 2x for terminal states
+    weight = torch.ones_like(returns)
+    weight[returns == 1]  = 2.0
+    weight[returns == -1] = 2.0
 
-    if NORMALIZE_ADVANTAGE:
-        advantage = (advantage - advantage_mean) / (advantage_std + 1e-8)
+    if algorithm == "PPO":
+        log_probs_taken_old = log_probs_taken.detach()   # log probs from initial policy
+        initial_probs = torch.exp(log_probs.detach())    # initial probabilities for KL divergence calculation
 
-    # --- Calculate Policy Loss ---
-    # Loss = - Σ [ G_t * log π(a_t | s_t) ]
-    weighting = advantage if value is not None else returns
-    policy_loss = -(weighting * log_probs_taken).sum()
-    
-    # --- Perform Gradient Update ---
-    optimizer.zero_grad()
-    
-    # add up loss contributions
-    total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
-    
-    total_loss.backward()
+        for epoch in range(PPO_EPOCHS):
+            if epoch == 0:
+                # use the already computed log_probs, value and entropy from the initial policy; don't recompute
+                log_probs_new = log_probs
+                log_probs_taken_new = log_probs_taken
+                value_new = value
+            else:
+                logits_new, value_new = model(states)
+                masked_logits_new = mask_invalid_moves_batch(states, logits_new, mask_value=-1e9)
+                log_probs_new = F.log_softmax(masked_logits_new, dim=1)
+                entropy = -(log_probs_new * torch.exp(log_probs_new)).sum(1)
+                log_probs_taken_new = torch.gather(log_probs_new, dim=1, index=actions).squeeze(1)
 
-    if GRAD_NORM_CLIPPING:
-        nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
-    gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
-    print(f'norm(grad) = {gradnorm:.4f}')
+            # Importance sampling: (current probability / original probability) of taken move
+            ratio = torch.exp(log_probs_taken_new - log_probs_taken_old)
 
-    optimizer.step()            # Update model weights
+            # Implement PPO clipping
+            surr1 = ratio * advantage
+            surr2 = torch.clamp(ratio, 1.0 - PPO_CLIP_EPSILON, 1.0 + PPO_CLIP_EPSILON) * advantage
+            policy_loss = -torch.min(surr1, surr2).sum()
+
+            value_loss = F.mse_loss(value_new, v_target, weight=weight, reduction='sum')
+
+            total_loss_ppo = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
+
+            # update the model
+            optimizer.zero_grad()
+            total_loss_ppo.backward()
+            if GRAD_NORM_CLIPPING:
+                nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
+            optimizer.step()
+
+            if PPO_TARGET_KL is not None:
+                # Early stopping based on KL divergence
+                with torch.no_grad():
+                    kl = (initial_probs * (log_probs - log_probs_new)).sum(dim=1).mean()
+                    print(f"  PPO epoch {epoch+1}: KL divergence: {kl.item():.4f}, Policy loss: {(policy_loss / states.shape[0]).item():.4f}")
+                    if kl > PPO_TARGET_KL:
+                        print(f"Stopping PPO early at epoch {epoch+1} due to KL divergence: {kl.item():.4f} > {PPO_TARGET_KL:.4f}")
+                        break
+
+
+    else:   # A2C or REINFORCE
+        value_loss = F.mse_loss(value, v_target, weight=weight, reduction='sum')
+        policy_loss = -(advantage * log_probs_taken).sum()
+        total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss - ENTROPY_BONUS * entropy.sum()
+
+        if debug:
+            for i in range(states.shape[0]):
+                pretty_print_board(states[i])
+                print(f"terminal: {done[i].item()}, move: {actions[i,0].item()}, return: {returns[i].item()}, V_next: {V_next[i].item():.4f}, v_target: {v_target[i].item():.4f}, value: {value[i].item():.4f}, advantage: {advantage[i].item():.4f}, value_loss: {(v_target[i] - value[i]).item()**2:.4f}, chance: {torch.exp(log_probs_taken[i]):.2f}")
+                print()
+            import sys
+            sys.exit(0)
+
+        optimizer.zero_grad()
+        total_loss.backward()
+
+        if GRAD_NORM_CLIPPING:
+            nn.utils.clip_grad_norm_(model.parameters(), GRAD_NORM_CLIPPING)
+        gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
+        print(f'norm(grad) = {gradnorm:.4f}')
+
+        optimizer.step()            # Update model weights
 
     if debug and False:
         print(" ------ after update ------ ")
@@ -613,12 +650,12 @@ def move_entropy(model, board: torch.Tensor) -> float:
 
 
 
-def train_against_opponents(model, opponents, debug=False):
+def train_against_opponents(model, opponents, checkpoint_file="best_model.pth", debug=False):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
-    if CHECKPOINT and os.path.exists(CHECKPOINT):
-        print(f"Loading model from {CHECKPOINT}")
-        checkpoint = torch.load(CHECKPOINT, map_location=DEVICE)
+    if checkpoint_file and os.path.exists(checkpoint_file):
+        print(f"Loading model from {checkpoint_file}")
+        checkpoint = torch.load(checkpoint_file, map_location=DEVICE)
         model.load_state_dict(checkpoint['model_state_dict'])
         if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -634,6 +671,7 @@ def train_against_opponents(model, opponents, debug=False):
     nprng = np.random.default_rng()
 
     # ----------------- MAIN TRAINING LOOP ----------------- #
+    #for epoch in range(40):
     while True:
         num_batches = 100
         num_games = 50
@@ -641,10 +679,10 @@ def train_against_opponents(model, opponents, debug=False):
             #random_opponent = torch.randint(0, len(opponents), (1,)).item()
             random_opponent = nprng.choice(len(opponents), p=opponent_weights)
             board_states, actions, rewards, done, wr = play_multiple_against_model(model, opponents[random_opponent], num_games=num_games, opponent_temperature=OPPONENT_TEMPERATURE)
-            print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ", end='')
+            print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ")
             estimated_wr[random_opponent] = estimated_wr[random_opponent] * 0.90 + wr * 0.10
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, debug=debug)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, algorithm=ALGORITHM, debug=debug)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
@@ -663,14 +701,15 @@ def train_against_opponents(model, opponents, debug=False):
                 print(f"Batch {i+1} / {num_batches} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
             wrplot.poll()
 
-        if CHECKPOINT:
+        if checkpoint_file:
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict()
-            }, CHECKPOINT)
-            print(f'Model saved to {CHECKPOINT}')
+            }, checkpoint_file)
+            print(f'Model saved to {checkpoint_file}')
 
         play(opponents[0], model, output=True)
+    #wrplot.save("final_training_plot.png")
 
 
 def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
@@ -772,7 +811,7 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
             board_states, actions, returns, done, wr = play_multiple_against_model(model, model_cp, num_games=games_per_batch)
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, returns, done)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, returns, done, algorithm=ALGORITHM)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)

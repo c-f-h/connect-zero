@@ -93,3 +93,6 @@ class UpdatablePlot:
     def poll(self):
         self.fig.canvas.flush_events()
 
+    def save(self, filename):
+        self.fig.savefig(filename, bbox_inches='tight')
+
