@@ -164,7 +164,7 @@ def run_fast_tournament(
     """
     Runs a round-robin tournament.
     """
-    from main import play_parallel
+    from main import play_parallel2
 
     num_models = len(models)
     if num_models < 2:
@@ -194,7 +194,7 @@ def run_fast_tournament(
             name1, name2 = name_list[i], name_list[j]
             model1, model2 = model_map[name1], model_map[name2]
 
-            (w1, w2, draws) = play_parallel(model1, model2, num_rounds)
+            (w1, w2, draws) = play_parallel2(model1, model2, num_rounds)
             total_games += num_rounds
 
             win_table[i, j] += w1
@@ -232,12 +232,11 @@ def run_fast_tournament(
     return sorted_ratings
 
 
-def win_rate(model1, model2, num_games=500):
+
+def win_rate(model1, model2, play_parallel2, num_games=500):
     """
     Simulates a number of games between two models and returns the win rate of model1.
     """
-    from main import play_parallel2
-
     (w1, w2, dr)    = play_parallel2(model1, model2, num_games // 2)
     (w2b, w1b, drb) = play_parallel2(model2, model1, num_games // 2)
     n = 2 * (num_games // 2)
@@ -257,17 +256,12 @@ def main_run(model_names, num_games=300):
 
     for m in models:
         print(f"Model: {m.__class__.__name__} -- {sum(p.numel() for p in m.parameters())} parameters")
-        #for p in m.parameters():
-        #    print(f"  {p.shape} - {p.dtype} - {p.numel()} parameters")
     
-    #import pyinstrument
-    #with pyinstrument.profile():
     show_tournament(models, model_names, num_games=num_games)
-    #results = run_fast_tournament(models, num_rounds=300, model_names=model_names)
 
 def benchmark_run():
     from model import RandomConnect4
-    from main import play_parallel, play_parallel2, init_device
+    from main import play_parallel2, init_device
     device = init_device(False)
 
     model = RandomConnect4()

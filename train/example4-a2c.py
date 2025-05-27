@@ -1,10 +1,10 @@
 ########## Example 4: Initial training against RandomPunisher with A2C ##########
 
 from main import set_params, train_against_opponents, init_device
-from model import Connect4CNN_Mk4, RandomPunisher
+from model import Connect4CNN_Mk4, RandomPunisher, load_frozen_model
 
 if __name__ == "__main__":
-    init_device(False)
+    device = init_device(True)
     set_params(
         algorithm="A2C",
         bootstrap_value=True,
@@ -14,7 +14,7 @@ if __name__ == "__main__":
         reward_discount=0.90,
     )
 
-    model = Connect4CNN_Mk4(value_head=True)
+    model = Connect4CNN_Mk4(value_head=True).to(device)
     opponents = [
         RandomPunisher()
     ]

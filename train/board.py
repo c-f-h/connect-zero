@@ -186,9 +186,16 @@ def check_win_batch_conv(boards: torch.Tensor) -> torch.Tensor:
         g_win_conv_kernel[1, 0, :, 1] = 1    # vertical
         g_win_conv_kernel[2, 0, ...] = torch.eye(4, dtype=torch.int8)             # diagonal \
         g_win_conv_kernel[3, 0, ...] = torch.eye(4, dtype=torch.int8).fliplr()    # diagonal /
+        if boards.is_cuda:
+            # PyTorch doesn't seem to support int8 convolution on CUDA
+            g_win_conv_kernel = g_win_conv_kernel.float().to(boards.device)
     # convert boards to 1 channel (B, 1, R, C) and convolve with four output channels
-    result = torch.nn.functional.conv2d(boards.unsqueeze(1), g_win_conv_kernel, padding=2)
-    return torch.amax(result, dim=(1, 2, 3)) == 4           # (B,)
+    if boards.is_cuda:
+        result = torch.nn.functional.conv2d(boards.unsqueeze(1).float(), g_win_conv_kernel, padding=2)
+        return torch.amax(result, dim=(1, 2, 3)) >= 3.99        # (B,) - just being paranoid about rounding errors
+    else:
+        result = torch.nn.functional.conv2d(boards.unsqueeze(1), g_win_conv_kernel, padding=2)
+        return torch.amax(result, dim=(1, 2, 3)) == 4           # (B,)
 
 def make_move_and_check_batch(boards: torch.Tensor, moves: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     new_boards = make_moves_batch(boards, moves)
