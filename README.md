@@ -14,6 +14,8 @@ Currently it implements:
   [theory](https://c-f-h.github.io/post/actor-critic/),
   [implementation](https://c-f-h.github.io/post/implementing-a2c/), and
   [evaluation](https://c-f-h.github.io/post/evaluating-a2c/)
+- PPO -- blog posts on [theory](https://c-f-h.github.io/post/ppo/),
+  implementation forthcoming
 
 It also contains some utility scripts for having models play single
 games or tournaments against each other, perform pretraining,
