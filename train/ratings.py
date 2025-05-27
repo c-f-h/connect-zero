@@ -2,7 +2,7 @@ import glicko2
 import math
 from collections import defaultdict
 
-from main import play_parallel
+from main import play_parallel2
 from model import load_frozen_model
 
 # --- Glicko Player Wrapper ---
@@ -193,10 +193,10 @@ class DynamicTournament:
 # --- Example Usage ---
 if __name__ == "__main__":
     model_names = (
-                  [f"CNN-Mk4:model-mk4-slf{i}.pth" for i in range(1, 6) ]
+                #  [f"CNN-Mk4:model-mk4-slf{i}.pth" for i in range(1, 6) ]
                 #+ [f"CNN-Mk4:model-mk4-a2c-cp{i}.pth" for i in range(6, 23)]
                 #  [f"CNN-Mk4:model-mk4-a2c-b{i}.pth" for i in range(1, 5)]
-                + [f"CNN-Mk4:selfplay/{i:04d}.pth" for i in range(1, 16)]
+                  [f"CNN-Mk4:selfplay/{i:04d}.pth" for i in range(1, 48)]
     )
     print(f"Loading {len(model_names)} models")
     models_map = {name: load_frozen_model(name) for name in model_names}
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     num_concurrent_batches_per_cycle = len(models_map) // 2 # Maximize participation
 
     for i in range(num_tournament_cycles):
-        tournament.run_cycle(num_concurrent_batches_per_cycle, play_parallel)
+        tournament.run_cycle(num_concurrent_batches_per_cycle, play_parallel2)
         tournament.print_rankings()
         if i % 5 == 0 or i == num_tournament_cycles - 1:
             df = tournament.get_agent_ratings_df()
