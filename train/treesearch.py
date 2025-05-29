@@ -17,7 +17,6 @@ def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int
         n_boardmoves = moves.shape[0]  # Total number of valid moves across all boards
 
         initial_boards = initial_boards.repeat_interleave(n_moves, dim=0)  # (n_boardmoves, R, C) - repeat each board for each valid move
-        assert initial_boards.shape[0] == n_boardmoves
         initial_boards, wins, draws = make_move_and_check_batch(initial_boards, moves)
 
         initial_values = torch.full((n_boardmoves,), 0.0, dtype=torch.float32, device=device)  # (n_boardmoves,)
@@ -78,3 +77,29 @@ def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, wid
     """
     values = multiple_rollouts(board.unsqueeze(0), model, width, depth)
     return values.squeeze(0)  # (COLS,)
+
+
+if __name__ == '__main__':
+    from board import string_to_board, pretty_print_board
+    from model import load_frozen_model, RolloutModel
+
+    boardstrings = r"""
+│  X   O O    │
+│O O   X O    │
+│X X   X O    │
+│X O   O X    │
+│X O X O X   X│
+│O X O X O X O│
+└─┴─┴─┴─┴─┴─┴─┘
+"""
+
+    lines = boardstrings.strip().split('\n')
+    boardstrings = [''.join(lines[i:i+7]) for i in range(0, len(lines), 7)]
+
+    b = string_to_board(boardstrings[0])
+    pretty_print_board(b)
+
+    model = RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts1.pth'), width=1, depth=1)
+    logits, value = model(b)
+    print(logits)
+    print(value)

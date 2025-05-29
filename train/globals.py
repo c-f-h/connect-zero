@@ -1,15 +1,18 @@
 import torch
 
-DEVICE = None
+_DEVICE = None
 
 def init_device(allow_cuda):
-    global DEVICE
+    global _DEVICE
     if allow_cuda:
-        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
-        DEVICE = torch.device("cpu")        # cuda is just slower currently
-    print(f"Using device: {DEVICE}")
-    return DEVICE
+        _DEVICE = torch.device("cpu")        # cuda is just slower currently
+    print(f"Using device: {_DEVICE}")
+    return _DEVICE
+
+def get_device():
+    return _DEVICE
 
 
 # Define board dimensions

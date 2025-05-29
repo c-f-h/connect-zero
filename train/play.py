@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from globals import ROWS, COLS, DEVICE
+from globals import ROWS, COLS, get_device
 from board import make_move_and_check, make_move_and_check_batch, pretty_print_board
 
 
@@ -11,7 +11,7 @@ def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> 
     value = None
     if epsilon > 0 and torch.rand(1).item() < epsilon:
         # Epsilon-greedy strategy: choose a random move with probability epsilon
-        logits = torch.zeros((COLS,), dtype=torch.float32, device=DEVICE)
+        logits = torch.zeros((COLS,), dtype=torch.float32, device=get_device())
     else:
         logits = model(board)
         if isinstance(logits, tuple):
@@ -29,7 +29,6 @@ def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> 
     move = torch.multinomial(probs, 1).item()
     return move
 
-
 def sample_moves(model, boards: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
     """
     Sample moves for a batch of boards using the model's output logits.
@@ -39,7 +38,7 @@ def sample_moves(model, boards: torch.Tensor, temperature: float = 1.0) -> torch
     """
     num_games = boards.shape[0]
     if num_games == 0:
-        return torch.empty(0, dtype=torch.long, device=DEVICE)
+        return torch.empty(0, dtype=torch.long, device=get_device())
 
     # Get model logits
     value = None
@@ -51,10 +50,6 @@ def sample_moves(model, boards: torch.Tensor, temperature: float = 1.0) -> torch
     # Mask out illegal moves (columns that are full)
     illegal_moves_mask = (boards[:, 0, :] != 0)
     logits[illegal_moves_mask] = -torch.inf
-
-    all_illegal = (logits == -torch.inf).all(dim=-1)
-    if all_illegal.any():
-        raise ValueError(f"Board(s) with no legal moves found: {torch.where(all_illegal)[0].tolist()}")
 
     probs = F.softmax(logits, dim=-1)
     moves = torch.multinomial(probs, 1).squeeze(-1)
@@ -68,7 +63,7 @@ def play(model1, model2, output=False):
     winner = 1
     moves = []
     with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=get_device())
 
         while True:
             if output:
@@ -101,10 +96,12 @@ def play_parallel(model1, model2, num_games):
     model1.eval()
     model2.eval()
 
+    device = get_device()
+
     with torch.no_grad():
-        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
-        winner = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
-        board  = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
+        active = torch.ones((num_games,), dtype=torch.int8, device=device)
+        winner = torch.ones((num_games,), dtype=torch.int8, device=device)
+        board  = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=device)
 
         iact = torch.where(active)[0]
         while torch.any(active):

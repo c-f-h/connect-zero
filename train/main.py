@@ -5,7 +5,7 @@ import torch.optim as optim
 import os.path
 import numpy as np
 
-from globals import ROWS, COLS, init_device, DEVICE
+from globals import ROWS, COLS, init_device, get_device
 from board import *
 from model import *
 from stats import *
@@ -13,8 +13,8 @@ from tournament import run_fast_tournament, win_rate
 from league import League
 from play import play, sample_move, sample_moves
 
-RESET_OPTIMIZER = True
-LEARNING_RATE = 3e-7
+RESET_OPTIMIZER = False
+LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0
 OPPONENT_TEMPERATURE = 1.0
 
@@ -30,10 +30,10 @@ KEEP_DRAWS        = True        # whether drawn games are kept in the training d
 REWARD_DISCOUNT = 0.98
 
 PPO_CLIP_EPSILON = 0.2
-PPO_EPOCHS = 4
+PPO_EPOCHS = 5
 PPO_TARGET_KL = 0.01
 
-ALGORITHM = "A2C"
+ALGORITHM = "PPO"
 
 def set_params(
     learning_rate=1e-4,
@@ -73,8 +73,8 @@ g_stats = BatchStats(["winrate", "game_length", "policy_loss", "value_loss", "en
                       "winrate_ref"])
 
 
-def compute_rewards(num_moves: int, outcome: int) -> tuple[torch.Tensor, torch.Tensor]:
-    move_nr = torch.arange(num_moves, device=DEVICE)
+def compute_rewards(num_moves: int, outcome: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+    move_nr = torch.arange(num_moves, device=device)
     is_done = (move_nr == (num_moves - 1))
     if BOOTSTRAP_VALUE:
         # bootstrapping: sparse rewards, only assigned for the winning move
@@ -159,6 +159,7 @@ def play_against_model(model, opponentmodel, reward_discount=0.95, epsilon_greed
 
 def play_parallel_with_results(model1, model2, track_player, num_games, opponent_temperature=1.0):
     """Have two models play against each other. Returns all board states, moves, and rewards for player `track_player`."""
+    device = get_device()
     model1.eval()
     model2.eval()
     wr = 0.0            # win rate for this batch
@@ -172,8 +173,8 @@ def play_parallel_with_results(model1, model2, track_player, num_games, opponent
 
     with torch.no_grad():
         # iact has the same length as board and stores the game index
-        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
-        iact  = torch.arange(num_games, device=DEVICE)
+        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=device)
+        iact  = torch.arange(num_games, device=device)
 
         curplayer = 0
         num_moves = 0
@@ -197,7 +198,7 @@ def play_parallel_with_results(model1, model2, track_player, num_games, opponent
             # Bookkeeping for won and drawn games
             for i in iact[where_wins].cpu():
                 # Game over - win
-                all_rewards[i], all_done[i] = compute_rewards(num_moves, 1 if (curplayer == track_player) else -1)
+                all_rewards[i], all_done[i] = compute_rewards(num_moves, 1 if (curplayer == track_player) else -1, device)
                 wr += 1 if (curplayer == track_player) else 0
                 g_stats.add('winrate', 1 if (curplayer == track_player) else 0)
                 g_stats.add('game_length', num_moves)
@@ -205,7 +206,7 @@ def play_parallel_with_results(model1, model2, track_player, num_games, opponent
             for i in iact[where_draws].cpu():
                 # Game over - draw
                 if KEEP_DRAWS:
-                    all_rewards[i], all_done[i] = compute_rewards(num_moves, 0)
+                    all_rewards[i], all_done[i] = compute_rewards(num_moves, 0, device)
                 else:
                     raise Exception('KEEP_DRAWS == False currently not supported')
 
@@ -461,16 +462,17 @@ def move_entropy(model, board: torch.Tensor) -> float:
 
 def train_against_opponents(model, opponents, checkpoint_file="best_model.pth",
                             batches_per_epoch=5, games_per_batch=1000, debug=False):
+    device = get_device()
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     if checkpoint_file and os.path.exists(checkpoint_file):
         print(f"Loading model from {checkpoint_file}")
-        checkpoint = torch.load(checkpoint_file, map_location=DEVICE)
+        checkpoint = torch.load(checkpoint_file, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-    board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+    board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=device)
     print("Starting move entropy:", move_entropy(model, board))
 
     wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', 'Rewards st.d.'],
@@ -518,6 +520,7 @@ def train_against_opponents(model, opponents, checkpoint_file="best_model.pth",
 
         play(opponents[0], model, output=True)
     #wrplot.save("final_training_plot.png")
+
 
 
 def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
@@ -587,7 +590,6 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
     cp_file = fname_prefix + "_last.pth"
     best_cp_file = fname_prefix + "_best.pth"
-    global DEVICE
     if DEVICE is None:
         init_device(False)
 
@@ -660,7 +662,7 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
 
 if __name__ == "__main__":
-    init_device(True)
+    device = init_device(True)
 
     #torch.backends.cudnn.benchmark = False
     #torch.backends.cudnn.deterministic = True
@@ -681,19 +683,16 @@ if __name__ == "__main__":
     #prof.export_chrome_trace("my_trace.json")
 
 
-    #import sys
-    #debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+    import sys
+    debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+
+    model = Connect4CNN_Mk4(value_head=True).to(device)
+    opponents = [
+        RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts1.pth').to(device), width=3, depth=5),
+    ]
+
+    train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=500, debug=debug)
 
     #model = Connect4CNN_Mk4(value_head=True)
-    #opponents = [
-    #    load_frozen_model('CNN-Mk4:model-mk4-a2c-b3.pth').to(DEVICE),
-    #    load_frozen_model('CNN-Mk4:model-mk4-a2c-b2.pth').to(DEVICE),
-    #    load_frozen_model('CNN-Mk4:model-mk4-slf2.pth').to(DEVICE),
-    #    load_frozen_model('CNN-Mk4:model-mk4-a2c-cp22.pth').to(DEVICE),
-    #    load_frozen_model('CNN-Mk4:model-mk4-a2c-cp16.pth').to(DEVICE),
-    #]
-    #train_against_opponents(model, opponents, debug=debug)
-
-    model = Connect4CNN_Mk4(value_head=True)
-    league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)
-    self_play_with_league(model, league, win_threshold=0.75)
+    #league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)
+    #self_play_with_league(model, league, win_threshold=0.75)

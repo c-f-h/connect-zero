@@ -267,9 +267,7 @@ def main_run(model_names, num_games=300):
     from model import load_frozen_model, RolloutModel
     from globals import init_device
 
-
     device = init_device(False)
-    
     models = [load_frozen_model(name).to(device) for name in model_names]
 
     for m in models:
@@ -279,26 +277,31 @@ def main_run(model_names, num_games=300):
 
 
 def benchmark_run():
+    import torch
     from model import load_frozen_model, RolloutModel
+    from treesearch import multiple_rollouts
     from globals import init_device
-    device = init_device(False)
-
-    model = load_frozen_model("CNN-Mk4:model-mk4-slf2.pth").to(device)
-    model = RolloutModel(model, width=4, depth=3)
     
-    import pyinstrument
-    with pyinstrument.Profiler() as prof:
-    #from torch.profiler import profile, ProfilerActivity
-    #with profile(
-    #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-    #    record_shapes=True,
-    #    with_stack=False,
-    #    profile_memory=True
-    #) as prof:
-        print(play_parallel(model, model, 10))
-    #prof.export_chrome_trace("my_trace.json")
-    prof.open_in_browser()
+    device = init_device(True)
+    model = load_frozen_model("CNN-Mk4:mk4-ts1.pth").to(device)
+    #model = RolloutModel(model, width=4, depth=3)
+
+    #import pyinstrument
+    #with pyinstrument.Profiler() as prof:
+    from torch.profiler import profile, ProfilerActivity
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=False,
+        profile_memory=True
+    ) as prof:
+        board = torch.zeros((100, 6, 7), dtype=torch.int8, device=device)
+        multiple_rollouts(board, model, width=8, depth=8)
+
+        #print(play_parallel(model, model, 100))
+    prof.export_chrome_trace("my_trace.json")
+    #prof.open_in_browser()
 
 if __name__ == '__main__':
-    main_run()
-    #benchmark_run()
+    #main_run()
+    benchmark_run()
