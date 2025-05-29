@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import Tuple
+
 from board import make_move_and_check, make_move_and_check_batch
+from treesearch import estimate_move_values_from_rollout
+
 
 # Define board dimensions
 ROWS = 6
@@ -898,6 +902,45 @@ class Connect4CNN_Mk5(nn.Module):
             p = p.squeeze(0)
             v = v.squeeze(0)
         return p, v
+
+
+def logits_and_value_from_rollout(model: nn.Module, board: torch.Tensor, width: int = 4, depth: int = 5) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Use rollouts to find the best move. Return logits and move value."""
+    values = estimate_move_values_from_rollout(board, model, width, depth)
+    best_move = torch.argmax(values)
+
+    logits = torch.full((COLS,), -1e12, device=board.device, dtype=torch.float32)
+    logits[best_move] = 1.0
+    return logits, values[best_move]
+
+
+class RolloutModel(nn.Module):
+    """
+    A model wrapper that uses rollout value estimates to select moves.
+    For each valid move, simulates rollouts using the given model, then picks the move with the highest estimated value.
+    """
+    def __init__(self, base_model: nn.Module, width: int = 4, depth: int = 5):
+        super().__init__()
+        self.base_model = base_model
+        self.width = width
+        self.depth = depth
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Given a board state, returns logits with 1.0 at the best move (by rollout value), -inf elsewhere.
+        """
+        if x.ndim == 2:
+            return logits_and_value_from_rollout(self.base_model, x, self.width, self.depth)
+        else:
+            logits = []
+            values = []
+
+            for i in range(x.shape[0]):
+                log, val = logits_and_value_from_rollout(self.base_model, x[i], self.width, self.depth)
+                logits.append(log)
+                values.append(val)
+
+            return torch.stack(logits, dim=0), torch.stack(values, dim=0)
 
 # =============================================================================================== #
 

@@ -1,14 +1,17 @@
-from main import init_device, play_parallel2, play_parallel_with_results, play_parallel_with_results
+from globals import init_device
+from main import play_parallel_with_results, play_parallel_with_results
 from model import RandomConnect4, load_frozen_model
 from board import pretty_print_board
 import torch
+
+from play import play_parallel
 
 def test_play_parallel():
     model = RandomConnect4()
     NUM_GAMES = 100
 
     torch.manual_seed(0)
-    results = play_parallel2(model, model, NUM_GAMES)
+    results = play_parallel(model, model, NUM_GAMES)
     assert results == (53, 47, 0), f"Results do not match"
 
 

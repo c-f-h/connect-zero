@@ -73,7 +73,7 @@ import click
 @click.option('--lr', default=1e-3, help='Learning rate for the optimizer.')
 def main_run(teacher, student, num_batches=250, batch_size=50, lr=1e-3):
     from model import load_frozen_model
-    from main import init_device
+    from globals import init_device
     init_device(False)
 
     teacher = load_frozen_model(teacher)

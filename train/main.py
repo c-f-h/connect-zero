@@ -4,19 +4,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 import os.path
 import numpy as np
-import matplotlib.pyplot as plt
 
-from typing import List
-
+from globals import ROWS, COLS, init_device, DEVICE
 from board import *
 from model import *
 from stats import *
 from tournament import run_fast_tournament, win_rate
 from league import League
-
-# Define board dimensions
-ROWS = 6
-COLS = 7
+from play import play, sample_move, sample_moves
 
 RESET_OPTIMIZER = True
 LEARNING_RATE = 3e-7
@@ -74,19 +69,8 @@ def set_params(
     ALGORITHM = algorithm
 
 
-DEVICE = None
 g_stats = BatchStats(["winrate", "game_length", "policy_loss", "value_loss", "entropy", "rewards_std", "advantage_std",
                       "winrate_ref"])
-
-
-def init_device(allow_cuda):
-    global DEVICE
-    if allow_cuda:
-        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        DEVICE = torch.device("cpu")        # cuda is just slower currently
-    print(f"Using device: {DEVICE}")
-    return DEVICE
 
 
 def compute_rewards(num_moves: int, outcome: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -98,70 +82,6 @@ def compute_rewards(num_moves: int, outcome: int) -> tuple[torch.Tensor, torch.T
     else:
         # Monte Carlo sampling: rewards are discounted over the game
         return (outcome * REWARD_DISCOUNT**move_nr).flip(dims=(0,)), is_done
-
-
-def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> int:
-    """Sample a move using the model's output logits."""
-    value = None
-    if epsilon > 0 and torch.rand(1).item() < epsilon:
-        # Epsilon-greedy strategy: choose a random move with probability epsilon
-        logits = torch.zeros((COLS,), dtype=torch.float32, device=DEVICE)
-    else:
-        logits = model(board)
-        if isinstance(logits, tuple):
-            logits, value = logits        # model could return (policy, value) or just policy
-    illegal_moves = torch.where(board[0, :] == 0, 0.0, -torch.inf)
-    logits += illegal_moves                     # Mask out illegal moves
-    probs = F.softmax(logits, dim=-1)           # Convert logits to probabilities
-    if output_probs:
-        np.set_printoptions(precision=3)
-        p = probs.cpu().numpy()
-        entropy = -(p * np.log(p + 1e-9)).sum()
-        print(f"Move probabilities: {p}, Entropy: {entropy:.4f}")
-        if value is not None:
-            print(f"Board state value estimate: {value.item()}")
-    move = torch.multinomial(probs, 1).item()
-    return move
-
-
-def sample_moves(model, boards: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-    """
-    Sample moves for a batch of boards using the model's output logits.
-
-    Returns:
-        A tensor of sampled moves, shape (N,).
-    """
-    num_games = boards.shape[0]
-    if num_games == 0:
-        return torch.empty(0, dtype=torch.long, device=DEVICE)
-
-    # Get model logits
-    value = None
-    logits = model(boards)
-    if isinstance(logits, tuple):
-        logits, value = logits  # model could return (policy, value) or just policy
-    logits /= temperature
-
-    # Mask out illegal moves (columns that are full)
-    illegal_moves_mask = (boards[:, 0, :] != 0)
-    logits[illegal_moves_mask] = -torch.inf
-
-    all_illegal = (logits == -torch.inf).all(dim=-1)
-    if all_illegal.any():
-        raise ValueError(f"Board(s) with no legal moves found: {torch.where(all_illegal)[0].tolist()}")
-
-    probs = F.softmax(logits, dim=-1)
-    moves = torch.multinomial(probs, 1).squeeze(-1)
-    return moves
-
-
-def sample_random_move(board: torch.Tensor) -> int:
-    """Sample a random move from the available columns."""
-    available_moves = torch.where(board[0, :] == 0)[0]
-    if available_moves.numel() == 0:
-        raise ValueError("No valid moves available.")
-    move = torch.randint(0, available_moves.numel(), (1,)).item()
-    return available_moves[move].item()
 
 
 def play_self(model, reward_discount=0.95, epsilon_greedy=0.0):
@@ -349,69 +269,6 @@ def dump_move_info(model, board_states, moves, rewards):
         print(move_entropy(model, board_states[i]))
         print(f"Action: {moves[i]}, Reward: {rewards[i]}")
 
-def play(model1, model2, output=False):
-    """Have two models play against each other."""
-    model1.eval()
-    model2.eval()
-    winner = 1
-    moves = []
-    with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
-
-        while True:
-            if output:
-                pretty_print_board(board if winner == 1 else -board, indent = (winner - 1) * 20)
-
-            move = sample_move(model1, board, output_probs=output)
-            moves.append(move)
-
-            if output:
-                print(f"Model {winner} plays: {move}")
-
-            board, win = make_move_and_check(board, move)
-
-            if win:
-                print('Move list:', moves)
-                return winner
-
-            elif torch.all(board[0, :] != 0):  # Check if the top row is full   
-                print('Move list:', moves)
-                return 0    # draw
-
-            board = -board
-            winner = 3 - winner
-            model1, model2 = model2, model1 # Swap models for the next turn
-
-
-def play_parallel2(model1, model2, num_games):
-    """Have two models play num_games against each other in parallel.
-    Returns (model 1 wins, model 2 wins, draws)."""
-    model1.eval()
-    model2.eval()
-    
-    with torch.no_grad():
-        active = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
-        winner = torch.ones((num_games,), dtype=torch.int8, device=DEVICE)
-        board  = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=DEVICE)
-
-        iact = torch.where(active)[0]
-        while torch.any(active):
-
-            moves = sample_moves(model1, board[iact])
-            board[iact], wins, draws = make_move_and_check_batch(board[iact], moves)
-
-            active[iact] &= ~(wins | draws) # deactivate games that are won or drawn
-            winner[iact[draws]] = 0         # set winner to 0 for drawn games
-
-            board[iact] *= -1
-            iact = torch.where(active)[0]
-            winner[iact] = 3 - winner[iact]     # change potential winner for next round in active games
-            
-            model1, model2 = model2, model1 # Swap models for the next turn
-    
-    return (winner == 1).sum().item(), (winner == 2).sum().item(), (winner == 0).sum().item()
-
-
 def mask_invalid_moves_batch(boards: torch.Tensor, logits: torch.Tensor, mask_value=-torch.inf):
     illegal_mask = torch.where(boards[:, 0, :] == 0, 0.0, mask_value)     # (B, C)
     return logits + illegal_mask                           # (B, C)
@@ -584,26 +441,9 @@ def update_policy(
 
 
 def show_winrate(model1, model2, num_games=300):
-    wr, dr = win_rate(model1, model2, play_parallel2, num_games=num_games)
+    wr, dr = win_rate(model1, model2, num_games=num_games)
     print(f"Win rate: {100*wr:.2f}%  Draw rate: {100*dr:.2f}%")
     return
-
-
-def show_tournament(all_models, model_names, num_games=300):
-    final_ratings = run_fast_tournament(
-        models=all_models,
-        num_rounds=num_games,
-        model_names=model_names,
-    )
-    
-    if final_ratings:
-        print()
-        rank = 1
-        for name, wins in final_ratings.items():
-            print(f" {rank}. {name:<15} -- {wins} wins")
-            rank += 1
-    else:
-        print("No results.")
 
 
 def move_entropy(model, board: torch.Tensor) -> float:
@@ -787,7 +627,7 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
             if batchnr % 20 == min(19, batches_per_epoch - 1):
                 if ref_model is not None:
-                    wr, dr = win_rate(model, ref_model, play_parallel2, num_games=100)
+                    wr, dr = win_rate(model, ref_model, num_games=100)
                     g_stats.add('winrate_ref', wr)
                 g_stats.aggregate()
                 wr_src = 'winrate_ref' if ref_model is not None else 'winrate'

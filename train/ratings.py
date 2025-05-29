@@ -2,7 +2,7 @@ import glicko2
 import math
 from collections import defaultdict
 
-from main import play_parallel2
+from play import play_parallel
 from model import load_frozen_model
 
 # --- Glicko Player Wrapper ---
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     num_concurrent_batches_per_cycle = len(models_map) // 2 # Maximize participation
 
     for i in range(num_tournament_cycles):
-        tournament.run_cycle(num_concurrent_batches_per_cycle, play_parallel2)
+        tournament.run_cycle(num_concurrent_batches_per_cycle, play_parallel)
         tournament.print_rankings()
         if i % 5 == 0 or i == num_tournament_cycles - 1:
             df = tournament.get_agent_ratings_df()

@@ -1,6 +1,7 @@
 ########## Example 4: Initial training against RandomPunisher with A2C ##########
 
-from main import set_params, train_against_opponents, init_device
+from globals import init_device
+from main import set_params, train_against_opponents
 from model import Connect4CNN_Mk4, RandomPunisher, load_frozen_model
 
 if __name__ == "__main__":

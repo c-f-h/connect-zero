@@ -1,8 +1,9 @@
 import math
-import random
-from typing import List, Callable, Any, Dict, Optional, Tuple
+from typing import List, Any, Dict, Optional, Tuple
 import numpy as np
 import click
+
+from play import play_parallel
 
 # --- Configuration ---
 INITIAL_ELO = 1200
@@ -73,7 +74,7 @@ def run_tournament(
     Returns:
         A dictionary mapping model names to their final Elo ratings, sorted descending.
     """
-    from main import play
+    from play import play
     
     num_models = len(models)
     if num_models < 2:
@@ -164,8 +165,6 @@ def run_fast_tournament(
     """
     Runs a round-robin tournament.
     """
-    from main import play_parallel2
-
     num_models = len(models)
     if num_models < 2:
         print("Need at least two models to run a tournament.")
@@ -194,7 +193,7 @@ def run_fast_tournament(
             name1, name2 = name_list[i], name_list[j]
             model1, model2 = model_map[name1], model_map[name2]
 
-            (w1, w2, draws) = play_parallel2(model1, model2, num_rounds)
+            (w1, w2, draws) = play_parallel(model1, model2, num_rounds)
             total_games += num_rounds
 
             win_table[i, j] += w1
@@ -233,42 +232,72 @@ def run_fast_tournament(
 
 
 
-def win_rate(model1, model2, play_parallel2, num_games=500):
+def win_rate(model1, model2, num_games=500):
     """
     Simulates a number of games between two models and returns the win rate of model1.
     """
-    (w1, w2, dr)    = play_parallel2(model1, model2, num_games // 2)
-    (w2b, w1b, drb) = play_parallel2(model2, model1, num_games // 2)
+    (w1, w2, dr)    = play_parallel(model1, model2, num_games // 2)
+    (w2b, w1b, drb) = play_parallel(model2, model1, num_games // 2)
     n = 2 * (num_games // 2)
 
     return (w1 + w1b) / n, (dr + drb) / n
+
+
+def show_tournament(all_models, model_names, num_games=300):
+    final_ratings = run_fast_tournament(
+        models=all_models,
+        num_rounds=num_games,
+        model_names=model_names,
+    )
+
+    if final_ratings:
+        print()
+        rank = 1
+        for name, wins in final_ratings.items():
+            print(f" {rank}. {name:<15} -- {wins} wins")
+            rank += 1
+    else:
+        print("No results.")
 
 
 @click.command()
 @click.argument('model_names', nargs=-1)
 @click.option('-n', '--num-games', default=300, help='Number of games to play in the tournament.')
 def main_run(model_names, num_games=300):
-    from model import load_frozen_model
-    from main import show_tournament, init_device
+    from model import load_frozen_model, RolloutModel
+    from globals import init_device
+
+
     device = init_device(False)
     
     models = [load_frozen_model(name).to(device) for name in model_names]
 
     for m in models:
         print(f"Model: {m.__class__.__name__} -- {sum(p.numel() for p in m.parameters())} parameters")
-    
+
     show_tournament(models, model_names, num_games=num_games)
 
+
 def benchmark_run():
-    from model import RandomConnect4
-    from main import play_parallel2, init_device
+    from model import load_frozen_model, RolloutModel
+    from globals import init_device
     device = init_device(False)
 
-    model = RandomConnect4()
+    model = load_frozen_model("CNN-Mk4:model-mk4-slf2.pth").to(device)
+    model = RolloutModel(model, width=4, depth=3)
     
     import pyinstrument
-    with pyinstrument.profile():
-        print(play_parallel2(model, model, 10000))
+    with pyinstrument.Profiler() as prof:
+    #from torch.profiler import profile, ProfilerActivity
+    #with profile(
+    #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #    record_shapes=True,
+    #    with_stack=False,
+    #    profile_memory=True
+    #) as prof:
+        print(play_parallel(model, model, 10))
+    #prof.export_chrome_trace("my_trace.json")
+    prof.open_in_browser()
 
 if __name__ == '__main__':
     main_run()

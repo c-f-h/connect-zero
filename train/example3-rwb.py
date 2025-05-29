@@ -1,6 +1,7 @@
 ########## Example 3: Self-play using REINFORCE with baseline ##########
 
-from main import set_params, self_play_loop, init_device
+from globals import init_device
+from main import set_params, self_play_loop
 from model import Connect4CNN_Mk4
 
 if __name__ == "__main__":
