@@ -688,10 +688,10 @@ if __name__ == "__main__":
 
     model = Connect4CNN_Mk4(value_head=True).to(device)
     opponents = [
-        RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts1.pth').to(device), width=3, depth=5),
+        RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts11.pth').to(device), width=3, depth=6, temperature=1.0),
     ]
 
-    train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=500, debug=debug)
+    train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=250, debug=debug)
 
     #model = Connect4CNN_Mk4(value_head=True)
     #league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)

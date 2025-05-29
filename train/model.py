@@ -904,9 +904,9 @@ class Connect4CNN_Mk5(nn.Module):
         return p, v
 
 
-def logits_and_value_from_rollout(model: nn.Module, board: torch.Tensor, width: int = 4, depth: int = 5) -> Tuple[torch.Tensor, torch.Tensor]:
+def logits_and_value_from_rollout(model: nn.Module, board: torch.Tensor, width: int = 4, depth: int = 5, temperature: float = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """Use rollouts to find the best move. Return logits and move value."""
-    values = estimate_move_values_from_rollout(board, model, width, depth)
+    values = estimate_move_values_from_rollout(board, model, width, depth, temperature=temperature)
     best_move = torch.argmax(values)
 
     logits = torch.full((COLS,), -1e12, device=board.device, dtype=torch.float32)
@@ -919,20 +919,21 @@ class RolloutModel(nn.Module):
     A model wrapper that uses rollout value estimates to select moves.
     For each valid move, simulates rollouts using the given model, then picks the move with the highest estimated value.
     """
-    def __init__(self, base_model: nn.Module, width: int = 4, depth: int = 5):
+    def __init__(self, base_model: nn.Module, width: int = 4, depth: int = 5, temperature: float = 1.0):
         super().__init__()
         self.base_model = base_model
         self.width = width
         self.depth = depth
+        self.temperature = temperature
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Given a board state, returns logits with 1.0 at the best move (by rollout value), -inf elsewhere.
         """
         if x.ndim == 2:
-            return logits_and_value_from_rollout(self.base_model, x, self.width, self.depth)
+            return logits_and_value_from_rollout(self.base_model, x, self.width, self.depth, temperature=self.temperature)
         else:
-            values = multiple_rollouts(x, self.base_model, self.width, self.depth)  # (batch_size, COLS)
+            values = multiple_rollouts(x, self.base_model, self.width, self.depth, temperature=self.temperature)  # (batch_size, COLS)
             best_move = torch.argmax(values, dim=1)
             logits = torch.full((x.shape[0], x.shape[2]), -1e12, device=x.device, dtype=torch.float32)
             logits[torch.arange(x.shape[0]), best_move] = 1.0

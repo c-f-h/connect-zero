@@ -4,7 +4,7 @@ import torch.nn as nn
 from board import make_move_and_check_batch
 from play import sample_moves
 
-def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int, depth: int) -> torch.Tensor:
+def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int, depth: int, temperature: float = 1.0) -> torch.Tensor:
     model.eval()
     with torch.no_grad():
         device = initial_boards.device
@@ -36,7 +36,7 @@ def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int
             if actidxs.numel() == 0:
                 break
             # Sample and play moves for all active boards
-            moves = sample_moves(model, boards[actidxs])
+            moves = sample_moves(model, boards[actidxs], temperature=temperature)
             next_boards, wins, draws = make_move_and_check_batch(boards[actidxs], moves)
             boards[actidxs] = -next_boards       # Flip the board for the next player
 
@@ -62,7 +62,7 @@ def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int
         return all_values
 
 
-def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, width: int, depth: int) -> torch.Tensor:
+def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, width: int, depth: int, temperature: float = 1.0) -> torch.Tensor:
     """
     Estimate the value of each move by simulating rollouts using the model's policy and value head.
 
@@ -75,7 +75,7 @@ def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, wid
     Returns:
         Tensor with estimated values for each move.
     """
-    values = multiple_rollouts(board.unsqueeze(0), model, width, depth)
+    values = multiple_rollouts(board.unsqueeze(0), model, width, depth, temperature=temperature)
     return values.squeeze(0)  # (COLS,)
 
 

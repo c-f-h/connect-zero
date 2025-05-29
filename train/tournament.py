@@ -303,5 +303,5 @@ def benchmark_run():
     #prof.open_in_browser()
 
 if __name__ == '__main__':
-    #main_run()
-    benchmark_run()
+    main_run()
+    #benchmark_run()
