@@ -197,7 +197,7 @@ def check_win_batch_conv(boards: torch.Tensor) -> torch.Tensor:
         result = torch.nn.functional.conv2d(boards.unsqueeze(1), g_win_conv_kernel, padding=2)
         return torch.amax(result, dim=(1, 2, 3)) == 4           # (B,)
 
-def make_move_and_check_batch(boards: torch.Tensor, moves: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def make_move_and_check_batch(boards: torch.Tensor, moves: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     new_boards = make_moves_batch(boards, moves)
     wins = check_win_batch_conv(new_boards)
     # check for draws among the games that are not won
@@ -208,13 +208,13 @@ def make_move_and_check_batch(boards: torch.Tensor, moves: torch.Tensor) -> tupl
 
 def pretty_print_board(board: torch.Tensor, indent=0):
     """Pretty print the board."""
-    board = board.cpu().numpy()  # Convert to numpy for easier printing
+    board_np = board.cpu().numpy()  # Convert to numpy for easier printing
     symbols = {0: " ", 1: "X", -1: "O"}  # Define symbols for empty, player 1, and player 2
     indentstr = indent * ' '
-    for row in range(board.shape[0]):
-        row_str = " ".join(symbols[board[row, col]] for col in range(board.shape[1]))
+    for row in range(board_np.shape[0]):
+        row_str = " ".join(symbols[board_np[row, col]] for col in range(board_np.shape[1]))
         print(indentstr + f"│{row_str}│")
-    print(indentstr + "└─" + "┴─"  * (board.shape[1] - 1) + "┘")
+    print(indentstr + "└─" + "┴─"  * (board_np.shape[1] - 1) + "┘")
 
 def string_to_board(s):
     s = [c for c in s if c in ' XO']

@@ -1,6 +1,6 @@
 import math
 import random
-from typing import List, Callable, Any, Dict, Tuple
+from typing import List, Callable, Any, Dict, Optional, Tuple
 import numpy as np
 import click
 
@@ -56,7 +56,7 @@ def run_tournament(
     num_rounds: int = NUM_ROUNDS,
     initial_elo: int = INITIAL_ELO,
     k_factor: int = K_FACTOR,
-    model_names: List[str] = None
+    model_names: Optional[List[str]] = None
 ) -> Dict[str, float]:
     """
     Runs a round-robin tournament and calculates Elo ratings.
@@ -159,7 +159,7 @@ def run_tournament(
 def run_fast_tournament(
     models: List[Any],
     num_rounds: int = NUM_ROUNDS,
-    model_names: List[str] = None
+    model_names: Optional[List[str]] = None
 ) -> Dict[str, float]:
     """
     Runs a round-robin tournament.

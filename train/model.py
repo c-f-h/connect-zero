@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from board import make_move_and_check
+from board import make_move_and_check, make_move_and_check_batch
 
 # Define board dimensions
 ROWS = 6
@@ -145,6 +145,25 @@ def find_best_move(board):
                     choice = torch.tensor(c, device=board.device)
                     logits = nn.functional.one_hot(choice, num_classes=cols).float()
                     return torch.log(logits + 1e-12) # Avoid log(0) by adding a small epsilon
+    return torch.zeros((cols,), dtype=torch.float32, device=board.device)
+
+def find_best_move2(board):
+    """
+    Finds a winning move for the current player (represented as +1) in the given board state.
+    If no winning move is found, moves randomly.
+
+    Returns logits, shape (C,).
+    """
+    # first check if we have a winning move; then if we can block the opponent's winning move
+    cols = board.shape[-1]
+    for B in (board, -board):
+        valid_moves = torch.where(B[0, :] == 0)[0]
+        B_rep = B.repeat(len(valid_moves), 1, 1)  # Repeat the board for each valid move
+        B_new, wins, draws = make_move_and_check_batch(B_rep, valid_moves)
+        if torch.any(wins):
+            logits = torch.full((cols,), -1e12, dtype=torch.float32, device=board.device)
+            logits[valid_moves[wins]] = 1.0
+            return logits
     return torch.zeros((cols,), dtype=torch.float32, device=board.device)
 
 
@@ -491,7 +510,7 @@ class Connect4CNN_MLP_Value(nn.Module):
         ])
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Defines the forward pass of the model.
         Returns:
@@ -593,7 +612,7 @@ class Connect4CNN_MLP_Value_v2(nn.Module):
         ])
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Defines the forward pass of the model.
         Returns:
@@ -678,7 +697,7 @@ class Connect4CNN_MLP_Value_v3(nn.Module):
         self.fc_layers = nn.ModuleList(fc_layers)
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Defines the forward pass of the model.
         Returns:
@@ -858,7 +877,7 @@ class Connect4CNN_Mk5(nn.Module):
             nn.Tanh()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         original_shape = x.shape
         if x.ndim == 2:
             x = x.unsqueeze(0)      # Add temporary batch dimension

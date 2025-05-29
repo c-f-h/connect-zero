@@ -89,7 +89,7 @@ def init_device(allow_cuda):
     return DEVICE
 
 
-def compute_rewards(num_moves: int, outcome: int) -> torch.Tensor:
+def compute_rewards(num_moves: int, outcome: int) -> tuple[torch.Tensor, torch.Tensor]:
     move_nr = torch.arange(num_moves, device=DEVICE)
     is_done = (move_nr == (num_moves - 1))
     if BOOTSTRAP_VALUE:
@@ -712,7 +712,7 @@ def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
             print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ", end='')
             league.update_winrate(random_opponent, wr)
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, debug=debug)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
@@ -826,11 +826,10 @@ if __name__ == "__main__":
     #torch.backends.cudnn.benchmark = False
     #torch.backends.cudnn.deterministic = True
 
-    ref_model = load_frozen_model('CNN-Mk4:pretrain1-a2c.pth').to(DEVICE)
-    constr = lambda: Connect4CNN_Mk4(value_head=True)
-
-    self_play_loop(constr, ref_model, games_per_batch=1000, batches_per_epoch=5, learning_rate=1e-3,
-                       win_threshold=0.60, fname_prefix="self")
+    #ref_model = load_frozen_model('CNN-Mk4:pretrain1-a2c.pth').to(DEVICE)
+    #constr = lambda: Connect4CNN_Mk4(value_head=True)
+    #self_play_loop(constr, ref_model, games_per_batch=1000, batches_per_epoch=5, learning_rate=1e-3,
+    #                   win_threshold=0.60, fname_prefix="self")
 
     #with profile(
     #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -856,5 +855,6 @@ if __name__ == "__main__":
     #]
     #train_against_opponents(model, opponents, debug=debug)
 
-    #league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)
-    #self_play_with_league(model, league, win_threshold=0.75)
+    model = Connect4CNN_Mk4(value_head=True)
+    league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)
+    self_play_with_league(model, league, win_threshold=0.75)
