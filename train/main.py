@@ -459,7 +459,8 @@ def move_entropy(model, board: torch.Tensor) -> float:
 
 
 
-def train_against_opponents(model, opponents, checkpoint_file="best_model.pth", debug=False):
+def train_against_opponents(model, opponents, checkpoint_file="best_model.pth",
+                            batches_per_epoch=5, games_per_batch=1000, debug=False):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     if checkpoint_file and os.path.exists(checkpoint_file):
@@ -482,12 +483,10 @@ def train_against_opponents(model, opponents, checkpoint_file="best_model.pth", 
     # ----------------- MAIN TRAINING LOOP ----------------- #
     #for epoch in range(40):
     while True:
-        num_batches = 5
-        num_games = 1000
-        for i in range(num_batches):
+        for i in range(batches_per_epoch):
             #random_opponent = torch.randint(0, len(opponents), (1,)).item()
             random_opponent = nprng.choice(len(opponents), p=opponent_weights)
-            board_states, actions, rewards, done, wr = play_multiple_against_model(model, opponents[random_opponent], num_games=num_games, opponent_temperature=OPPONENT_TEMPERATURE)
+            board_states, actions, rewards, done, wr = play_multiple_against_model(model, opponents[random_opponent], num_games=games_per_batch, opponent_temperature=OPPONENT_TEMPERATURE)
             print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ")
             estimated_wr[random_opponent] = estimated_wr[random_opponent] * 0.90 + wr * 0.10
 
@@ -496,7 +495,7 @@ def train_against_opponents(model, opponents, checkpoint_file="best_model.pth", 
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
 
-            if i % 20 == min(19, num_batches - 1):
+            if i % 20 == min(19, batches_per_epoch - 1):
                 show_winrate(model, opponents[0], num_games=300)
                 opponent_weights = np.clip(1.0 - estimated_wr, 0.05, 1.0)
                 opponent_weights /= opponent_weights.sum()
@@ -507,7 +506,7 @@ def train_against_opponents(model, opponents, checkpoint_file="best_model.pth", 
                     'winrate', 'entropy', 'rewards_std',
                     'policy_loss', 'value_loss', 'advantage_std']
                 )
-                print(f"Batch {i+1} / {num_batches} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
+                print(f"Batch {i+1} / {batches_per_epoch} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
             wrplot.poll()
 
         if checkpoint_file:
