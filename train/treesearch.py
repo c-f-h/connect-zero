@@ -4,8 +4,64 @@ import torch.nn as nn
 from board import make_move_and_check_batch
 from play import sample_moves
 
-def multiple_rollouts(boards: torch.Tensor, model: nn.Module, depth: int):
-    pass
+def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int, depth: int) -> torch.Tensor:
+    model.eval()
+    with torch.no_grad():
+        device = initial_boards.device
+        n_inputs = initial_boards.shape[0]
+        valid_moves = (initial_boards[:, 0] == 0)
+        n_moves = valid_moves.sum(dim=1)        # Number of valid moves for each board
+
+        # Compute 1D tensor for the valid moves per board
+        moves = torch.where(valid_moves)[1]
+        n_boardmoves = moves.shape[0]  # Total number of valid moves across all boards
+
+        initial_boards = initial_boards.repeat_interleave(n_moves, dim=0)  # (n_boardmoves, R, C) - repeat each board for each valid move
+        assert initial_boards.shape[0] == n_boardmoves
+        initial_boards, wins, draws = make_move_and_check_batch(initial_boards, moves)
+
+        initial_values = torch.full((n_boardmoves,), 0.0, dtype=torch.float32, device=device)  # (n_boardmoves,)
+        initial_values[wins] = 1.0
+
+        # Repeat the boards after the initial move for each rollout width
+        # Note: board is already flipped for the next player
+        boards = (-initial_boards).repeat_interleave(width, dim=0) # (n_boardmoves*width, ROWS, COLS)
+        finished = (wins | draws).repeat_interleave(width, dim=0)  # (n_boardmoves*width,)
+        values = initial_values.repeat_interleave(width)           # (n_boardmoves*width,)
+
+        actidxs = torch.where(~finished)[0]  # Global indices of active games
+
+        # ply = 0 is opponent's move, ply = 1 is our move, and so on
+        for ply in range(depth):
+            # Only continue unfinished games
+            if actidxs.numel() == 0:
+                break
+            # Sample and play moves for all active boards
+            moves = sample_moves(model, boards[actidxs])
+            next_boards, wins, draws = make_move_and_check_batch(boards[actidxs], moves)
+            boards[actidxs] = -next_boards       # Flip the board for the next player
+
+            # Update finished mask and values
+            just_finished = wins | draws
+            finished[actidxs[just_finished]] = True  # Update finished for the global indices
+            values[actidxs[wins]] = 1.0 if (ply % 2 == 1) else -1.0  # Update values for winning moves
+
+            actidxs = actidxs[~just_finished]  # Keep only active games for the next iteration
+
+        # For unfinished games, use value head to estimate value of final position
+        unfinished = ~finished
+        if unfinished.any():
+            sign = 1.0 if (depth % 2 == 1) else -1.0  # Sign depends on whether we are at our turn
+            _, v = model(boards[unfinished])
+            values[unfinished] = sign * v
+
+        # Average values for each move
+        valid_move_values = values.view((n_boardmoves, width)).mean(dim=1)  # (n_boardmoves,)
+
+        all_values = torch.full((n_inputs, boards.shape[2]), -1e12, device=device)
+        all_values[valid_moves] = valid_move_values
+        return all_values
+
 
 def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, width: int, depth: int) -> torch.Tensor:
     """
@@ -20,55 +76,5 @@ def estimate_move_values_from_rollout(board: torch.Tensor, model: nn.Module, wid
     Returns:
         Tensor with estimated values for each move.
     """
-    model.eval()
-    with torch.no_grad():
-        device = board.device
-        valid_moves = torch.where(board[0] == 0)[0]  # Get valid moves (columns that are not full)
-        n_moves = valid_moves.shape[0]
-
-        initial_boards = board.unsqueeze(0).repeat(n_moves, 1, 1)  # (n_moves, ROWS, COLS)
-        initial_boards, wins, draws = make_move_and_check_batch(initial_boards, valid_moves)
-
-        initial_values = torch.full((n_moves,), 0.0, dtype=torch.float32, device=device)
-        initial_values[wins] = 1.0
-
-        # Repeat the boards after the initial move for each rollout width
-        # Note: board is already flipped for the next player
-        boards = (-initial_boards).repeat_interleave(width, dim=0) # (n_moves*width, ROWS, COLS)
-        finished = (wins | draws).repeat_interleave(width, dim=0)  # (n_moves*width,)
-        values = initial_values.repeat_interleave(width)           # (n_moves*width,)
-
-        # ply = 0 is opponent's move, ply = 1 is our move, and so on
-        for ply in range(depth):
-            # Only continue unfinished games
-            active = ~finished
-            if not active.any():
-                break
-            # Sample and play moves for all active boards
-            moves = sample_moves(model, boards[active])
-            next_boards, wins, draws = make_move_and_check_batch(boards[active], moves)
-            boards[active] = -next_boards       # Flip the board for the next player
-
-            # Update finished mask and values
-            just_finished = wins | draws
-            idxs = torch.where(active)[0]           # get global indices of active games
-            for i_global, i_act in zip(idxs[just_finished], torch.where(just_finished)[0]):
-                finished[i_global] = True
-                if wins[i_act]:
-                    # Current player wins: +1 or -1, depending on the ply
-                    values[i_global] = 1.0 if (ply % 2 == 1) else -1.0
-                # no need to update values for draws, they remain 0.0
-
-        # For unfinished games, use value head to estimate value of final position
-        unfinished = ~finished
-        if unfinished.any():
-            sign = 1.0 if (depth % 2 == 1) else -1.0  # Sign depends on whether we are at our turn
-            _, v = model(boards[unfinished])
-            values[unfinished] = sign * v
-
-        # Average values for each move
-        valid_move_values = values.view((n_moves, width)).mean(dim=1)  # (n_moves,)
-
-        all_values = torch.full((board.shape[1],), -1e12, device=device)
-        all_values[valid_moves] = valid_move_values
-        return all_values
+    values = multiple_rollouts(board.unsqueeze(0), model, width, depth)
+    return values.squeeze(0)  # (COLS,)

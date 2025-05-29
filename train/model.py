@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Tuple
 
 from board import make_move_and_check, make_move_and_check_batch
-from treesearch import estimate_move_values_from_rollout
+from treesearch import estimate_move_values_from_rollout, multiple_rollouts
 
 
 # Define board dimensions
@@ -932,15 +932,12 @@ class RolloutModel(nn.Module):
         if x.ndim == 2:
             return logits_and_value_from_rollout(self.base_model, x, self.width, self.depth)
         else:
-            logits = []
-            values = []
+            values = multiple_rollouts(x, self.base_model, self.width, self.depth)  # (batch_size, COLS)
+            best_move = torch.argmax(values, dim=1)
+            logits = torch.full((x.shape[0], x.shape[2]), -1e12, device=x.device, dtype=torch.float32)
+            logits[torch.arange(x.shape[0]), best_move] = 1.0
 
-            for i in range(x.shape[0]):
-                log, val = logits_and_value_from_rollout(self.base_model, x[i], self.width, self.depth)
-                logits.append(log)
-                values.append(val)
-
-            return torch.stack(logits, dim=0), torch.stack(values, dim=0)
+            return logits, values[torch.arange(x.shape[0]), best_move]
 
 # =============================================================================================== #
 
