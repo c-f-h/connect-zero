@@ -5,6 +5,8 @@ from board import make_move_and_check_batch
 from play import sample_moves
 
 def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int, depth: int, temperature: float = 1.0) -> torch.Tensor:
+    from main import REWARD_DISCOUNT
+
     model.eval()
     with torch.no_grad():
         device = initial_boards.device
@@ -43,16 +45,16 @@ def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int
             # Update finished mask and values
             just_finished = wins | draws
             finished[actidxs[just_finished]] = True  # Update finished for the global indices
-            values[actidxs[wins]] = 1.0 if (ply % 2 == 1) else -1.0  # Update values for winning moves
+            values[actidxs[wins]] = (REWARD_DISCOUNT**(ply + 1)) * (1.0 if (ply % 2 == 1) else -1.0)  # Update values for winning moves
 
             actidxs = actidxs[~just_finished]  # Keep only active games for the next iteration
 
         # For unfinished games, use value head to estimate value of final position
         unfinished = ~finished
         if unfinished.any():
-            sign = 1.0 if (depth % 2 == 1) else -1.0  # Sign depends on whether we are at our turn
+            factor = (REWARD_DISCOUNT**(depth + 1)) * (1.0 if (depth % 2 == 1) else -1.0)  # Sign depends on whether we are at our turn
             _, v = model(boards[unfinished])
-            values[unfinished] = sign * v
+            values[unfinished] = factor * v
 
         # Average values for each move
         valid_move_values = values.view((n_boardmoves, width)).mean(dim=1)  # (n_boardmoves,)
