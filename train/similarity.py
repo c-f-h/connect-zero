@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from main import mask_invalid_moves_batch, play_multiple_against_model
 from model import load_frozen_model
+from globals import get_device
 
 
 def collect_states_from_random_play(
@@ -279,7 +280,7 @@ def compute_similarity_matrix(models: List[torch.nn.Module], verbose=False) -> n
     for m in models:
         m.eval()
 
-    similarity_states = torch.load("similarity_states.pth")
+    similarity_states = torch.load("similarity_states.pth").to(get_device())
     #print(f"Loaded {similarity_states.shape[0]} similarity states.")
 
     for i in range(num_models):

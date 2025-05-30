@@ -267,7 +267,7 @@ def main_run(model_names, num_games=300):
     from model import load_frozen_model, RolloutModel
     from globals import init_device
 
-    device = init_device(False)
+    device = init_device(True)
     models = [load_frozen_model(name).to(device) for name in model_names]
 
     for m in models:
