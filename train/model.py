@@ -943,6 +943,11 @@ class RolloutModel(nn.Module):
 # =============================================================================================== #
 
 def load_frozen_model(name):
+    rollout = False
+    if name[:2] == 'R@':
+        name = name[2:]
+        rollout = True
+
     if ':' in name:
         name, f_override = name.split(':')
     else:
@@ -954,6 +959,8 @@ def load_frozen_model(name):
         if fname != "None":
             state = torch.load(fname)
             model.load_state_dict(state['model_state_dict'])
+        if rollout:
+            model = RolloutModel(model, width=4, depth=4)
         return model
 
     if name == 'First':
