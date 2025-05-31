@@ -84,79 +84,6 @@ def compute_rewards(num_moves: int, outcome: int, device) -> tuple[torch.Tensor,
         return (outcome * REWARD_DISCOUNT**move_nr).flip(dims=(0,)), is_done
 
 
-def play_self(model, reward_discount=0.95, epsilon_greedy=0.0):
-    """Have a model play against itself."""
-    model.eval()
-    board_states, moves = [], []
-    curplayer = 1
-    with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=get_device())
-
-        while True:
-            move = sample_move(model, board, epsilon=epsilon_greedy)
-            board_states.append(board)  # no clone necessary since we do no destructive updates
-            moves.append(move)
-            board, win = make_move_and_check(board, move)
-
-            if win:
-                num_moves = len(board_states)
-                move_nr = torch.arange(num_moves)
-                rewards = ((-1.0)**move_nr * reward_discount**(move_nr // 2))
-                rewards = rewards.flip(dims=(0,))
-                g_stats.add('winrate', 1 if curplayer == 1 else 0)      # note: here this simply means "player 1 wins", win rate is meaningless in selfplay
-                return board_states, moves, rewards
-
-            elif torch.all(board[0, :] != 0):  # Check if the top row is full - draw
-                g_stats.add('winrate', 0.5)
-                if KEEP_DRAWS:
-                    return board_states, moves, torch.zeros((len(board_states),))
-                else:
-                    return [], [], []
-
-            board = -board
-            curplayer = 3 - curplayer
-
-
-def play_against_model(model, opponentmodel, reward_discount=0.95, epsilon_greedy=0.0):
-    """Have a model play against a frozen opponent model."""
-    model.eval()
-    opponentmodel.eval()
-    board_states, moves = [], []
-
-    curplayer = torch.randint(1, 3, (1,)).item() # Randomly choose starting player
-
-    with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=get_device())
-
-        while True:
-            if curplayer == 1:
-                move = sample_move(model, board, epsilon=epsilon_greedy)
-                board_states.append(board)  # no clone necessary since we do no destructive updates
-                moves.append(move)
-            else:
-                move = sample_move(opponentmodel, board)
-            board, win = make_move_and_check(board, move)
-
-            if win:
-                num_moves = len(board_states)
-                move_nr = torch.arange(num_moves)
-                R = 1.0 if curplayer == 1 else -1.0
-                rewards = R * reward_discount**move_nr
-                rewards = rewards.flip(dims=(0,))
-                g_stats.add('winrate', 1 if curplayer == 1 else 0)
-                return board_states, moves, rewards
-
-            elif torch.all(board[0, :] != 0):  # Check if the top row is full - draw
-                g_stats.add('winrate', 0.5)
-                if KEEP_DRAWS:
-                    return board_states, moves, torch.zeros((len(board_states),))
-                else:
-                    return [], [], []
-
-            board = -board
-            curplayer = 3 - curplayer # Switch players
-
-
 def play_parallel_with_results(model1, model2, track_player, num_games, opponent_temperature=1.0):
     """Have two models play against each other. Returns all board states, moves, and rewards for player `track_player`."""
     device = get_device()
@@ -231,31 +158,6 @@ def play_parallel_with_results(model1, model2, track_player, num_games, opponent
     reorder = torch.argsort(all_gameidxs, stable=True)
 
     return all_board_states[reorder], all_moves[reorder], torch.cat(all_rewards), torch.cat(all_done), wr / num_games
-
-
-def play_multiple(model, num_games: int, game_func):
-    """Have a model play multiple matches. game_func is called to play one match."""
-    all_board_states = []
-    all_moves = []
-    all_rewards = []
-
-    games_played = 0
-    game_length = 0
-
-    for _ in range(num_games):
-        board_states, moves, rewards = game_func(model)
-
-        if len(board_states) > 0:
-            games_played += 1
-            game_length += len(board_states)
-
-            all_board_states.extend(board_states)
-            all_moves.extend(moves)
-            all_rewards.append(rewards)     # list of tensors
-
-    g_stats.add('game_length', game_length, games_played)
-    all_rewards = torch.cat(all_rewards, dim=0)
-    return all_board_states, all_moves, all_rewards
 
 
 def play_multiple_against_model(model, opponent, num_games: int, opponent_temperature=1.0):
