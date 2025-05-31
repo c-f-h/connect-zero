@@ -523,13 +523,14 @@ def train_against_opponents(model, opponents, checkpoint_file="best_model.pth",
 
 
 
-def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
+def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75, model_improver=None,
+        batches_per_epoch=100, games_per_batch=100):
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     cp_file = os.path.join(league.dir, "cur.pth")
     if cp_file and os.path.exists(cp_file):
         print(f"Loading model from {cp_file}")
-        checkpoint = torch.load(cp_file, map_location=DEVICE)
+        checkpoint = torch.load(cp_file, map_location=get_device())
         model.load_state_dict(checkpoint['model_state_dict'])
         if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -539,8 +540,6 @@ def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
 
     # ----------------- MAIN TRAINING LOOP ----------------- #
     while True:
-        num_batches = 100
-        num_games = 50
         print(" ====================== CURRENT LEAGUE ======================= ")
         sort_order = np.argsort(league.estimated_wr)
         for k in range(len(league.models)):
@@ -548,13 +547,16 @@ def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
             print(f"  {i}: {league.model_names[i]:<40} Win rate: {league.estimated_wr[i]*100:.1f}%")
         print(" ============================================================= ")
 
-        for i in range(num_batches):
+        for i in range(batches_per_epoch):
             random_opponent = league.choose_opponent()
-            board_states, actions, rewards, done, wr = play_multiple_against_model(model, league.models[random_opponent], num_games=num_games, opponent_temperature=OPPONENT_TEMPERATURE)
+            opp_model = league.models[random_opponent]
+            if model_improver is not None:
+                opp_model = model_improver(opp_model)
+            board_states, actions, rewards, done, wr = play_multiple_against_model(model, opp_model, num_games=games_per_batch, opponent_temperature=OPPONENT_TEMPERATURE)
             print(f"opp: {random_opponent} wr: {wr*100:2.0f}% ", end='')
             league.update_winrate(random_opponent, wr)
 
-            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done)
+            policy_loss, value_loss, entropy = update_policy(model, optimizer, board_states, actions, rewards, done, algorithm=ALGORITHM)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
@@ -568,7 +570,7 @@ def self_play_with_league(model: nn.Module, league: League, win_threshold=0.75):
                     'winrate', 'entropy', 'rewards_std',
                     'policy_loss', 'value_loss', 'advantage_std']
                 )
-                print(f"Batch {i+1} / {num_batches} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
+                print(f"Batch {i+1} / {batches_per_epoch} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
             wrplot.poll()
 
         torch.save({
