@@ -191,7 +191,7 @@ def run_fast_tournament(
                 continue # Models don't play against themselves
 
             name1, name2 = name_list[i], name_list[j]
-            model1, model2 = model_map[name1], model_map[name2]
+            model1, model2 = models[i], models[j]
 
             (w1, w2, draws) = play_parallel(model1, model2, num_rounds)
             total_games += num_rounds
@@ -224,10 +224,10 @@ def run_fast_tournament(
 
     total_wins = win_table.sum(axis=1)
     
-    model_wins = dict(zip(name_list, total_wins))
+    model_wins = zip(name_list, total_wins)
 
     # Sort final ratings by total wins (descending)
-    sorted_ratings = dict(sorted(model_wins.items(), key=lambda item: item[1], reverse=True))
+    sorted_ratings = sorted(model_wins, key=lambda item: item[1], reverse=True)
     return sorted_ratings
 
 
@@ -253,7 +253,7 @@ def show_tournament(all_models, model_names, num_games=300):
     if final_ratings:
         print()
         rank = 1
-        for name, wins in final_ratings.items():
+        for name, wins in final_ratings:
             print(f" {rank}. {name:<15} -- {wins} wins")
             rank += 1
     else:
