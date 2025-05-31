@@ -90,7 +90,7 @@ def play_self(model, reward_discount=0.95, epsilon_greedy=0.0):
     board_states, moves = [], []
     curplayer = 1
     with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=get_device())
 
         while True:
             move = sample_move(model, board, epsilon=epsilon_greedy)
@@ -126,7 +126,7 @@ def play_against_model(model, opponentmodel, reward_discount=0.95, epsilon_greed
     curplayer = torch.randint(1, 3, (1,)).item() # Randomly choose starting player
 
     with torch.no_grad():
-        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=DEVICE)
+        board = torch.zeros((ROWS, COLS), dtype=torch.int8, device=get_device())
 
         while True:
             if curplayer == 1:
@@ -592,25 +592,24 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
 
     cp_file = fname_prefix + "_last.pth"
     best_cp_file = fname_prefix + "_best.pth"
-    if DEVICE is None:
-        init_device(False)
+    device = get_device()
 
     # Create two copies of the model
-    model = model_constructor().to(DEVICE)
-    model_cp = model_constructor().to(DEVICE)
+    model = model_constructor().to(device)
+    model_cp = model_constructor().to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
     if os.path.exists(cp_file):
         print(f"Loading model from {cp_file}")
-        checkpoint = torch.load(cp_file, map_location=DEVICE)
+        checkpoint = torch.load(cp_file, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model_cp.load_state_dict(model.state_dict())  # Copy the model state to the checkpoint model
         if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     if os.path.exists(best_cp_file):
         print(f"Loading best model from {best_cp_file}")
-        checkpoint = torch.load(best_cp_file, map_location=DEVICE)
+        checkpoint = torch.load(best_cp_file, map_location=get_device())
         model_cp.load_state_dict(checkpoint['model_state_dict'])
 
     wrplot = UpdatablePlot(labels=[['Win rate (against ref)', 'Entropy', "Returns st.d."],

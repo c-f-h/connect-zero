@@ -12,6 +12,8 @@ def init_device(allow_cuda):
     return _DEVICE
 
 def get_device():
+    if _DEVICE is None:
+        raise RuntimeError("Device not initialized. Call init_device first.")
     return _DEVICE
 
 
