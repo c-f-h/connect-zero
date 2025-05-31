@@ -57,6 +57,8 @@ class League:
         return self.rng.choice(len(self.models), p=self.opponent_weights)
 
     def find_opponent_to_eliminate(self):
+        if len(self.models) == 1:
+            return 0
         from similarity import compute_similarity_matrix
 
         print("Computing similarity matrix...")
