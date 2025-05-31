@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from globals import ROWS, COLS, get_device
+from globals import ROWS, COLS, init_device, get_device
 from board import make_move_and_check, make_move_and_check_batch, pretty_print_board
 
 
@@ -124,6 +124,8 @@ def play_parallel(model1, model2, num_games):
 if __name__ == '__main__':
     import sys
     from model import load_frozen_model
+
+    init_device(True)
 
     model_names = sys.argv[1:]
     if len(model_names) != 2:
