@@ -1,9 +1,11 @@
 import glicko2
 import math
 from collections import defaultdict
+import click
 
+from globals import init_device
 from play import play_parallel
-from model import load_frozen_model
+from model import load_frozen_model, expand_model_globs
 
 # --- Glicko Player Wrapper ---
 class GlickoAgent:
@@ -190,16 +192,16 @@ class DynamicTournament:
             })
         return pd.DataFrame(data).sort_values(by="rating", ascending=False).reset_index(drop=True)
 
-# --- Example Usage ---
-if __name__ == "__main__":
-    model_names = (
-                #  [f"CNN-Mk4:model-mk4-slf{i}.pth" for i in range(1, 6) ]
-                #+ [f"CNN-Mk4:model-mk4-a2c-cp{i}.pth" for i in range(6, 23)]
-                #  [f"CNN-Mk4:model-mk4-a2c-b{i}.pth" for i in range(1, 5)]
-                  [f"CNN-Mk4:selfplay/{i:04d}.pth" for i in range(1, 48)]
-    )
+
+@click.command()
+@click.argument('model_names', nargs=-1)
+def main_run(model_names, num_games=300):
+    model_names = expand_model_globs(model_names)
+    if len(model_names) < 2:
+        raise ValueError('Need at least 2 models.')
+    device = init_device(False)
     print(f"Loading {len(model_names)} models")
-    models_map = {name: load_frozen_model(name) for name in model_names}
+    models_map = {name: load_frozen_model(name).to(device) for name in model_names}
 
     # Initialize tournament
     # Weights: RD slightly more important, then TSLP, then Diff
@@ -235,3 +237,6 @@ if __name__ == "__main__":
     final_df = tournament.get_agent_ratings_df()
     if final_df is not None:
         print(final_df)
+
+if __name__ == "__main__":
+    main_run()

@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import glob
+
 from typing import Tuple
 
 from board import make_move_and_check, make_move_and_check_batch
@@ -1003,3 +1005,15 @@ def load_frozen_model(name):
         return restore_model(model, 'pretrained.pth')
     else:
         raise ValueError('unknown model name: ' + name)
+
+
+def expand_model_globs(model_names):
+    """Take any model names which contain * and expand them using glob."""
+    result = []
+    for name in model_names:
+        if '*' in name:
+            prefix, pattern = name.split(':')
+            result.extend([f'{prefix}:{f}' for f in glob.glob(pattern)])
+        else:
+            result.append(name)
+    return result
