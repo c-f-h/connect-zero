@@ -26,6 +26,7 @@ VALUE_LOSS_WEIGHT = 0.25 #0.5
 NORMALIZE_ADVANTAGE = False       # normalize the advantage estimate per batch
 BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
 KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
+AUGMENT_SYMMETRY  = False       # augment the training data with mirror symmetry (flipping the board horizontally)
 
 REWARD_DISCOUNT = 0.98
 
@@ -159,11 +160,21 @@ def play_parallel_with_results(model1, model2, track_player, num_games, opponent
 
     return all_board_states[reorder], all_moves[reorder], torch.cat(all_rewards), torch.cat(all_done), wr / num_games
 
+def augment_symmetry(boards: torch.Tensor, moves: torch.Tensor, rewards: torch.Tensor, done: torch.Tensor) -> tuple:
+    """Augment the board states and moves via mirror symmetry."""
+    flip_boards = torch.flip(boards, dims=(2,))  # flip horizontally
+    flip_moves = COLS - 1 - moves                # flip moves to match the flipped board
+    # rewards and done flags are the same for flipped boards
+    return torch.cat((boards, flip_boards)), torch.cat((moves, flip_moves)), torch.cat((rewards, rewards)), torch.cat((done, done))
+    
 
 def play_multiple_against_model(model, opponent, num_games: int, opponent_temperature=1.0):
     b1, m1, r1, d1, wr1 = play_parallel_with_results(model, opponent, track_player=0, num_games=num_games//2, opponent_temperature=opponent_temperature)
     b2, m2, r2, d2, wr2 = play_parallel_with_results(opponent, model, track_player=1, num_games=num_games//2, opponent_temperature=opponent_temperature)
-    return torch.cat((b1, b2)), torch.cat((m1, m2)), torch.cat((r1, r2)), torch.cat((d1, d2)), (wr1 + wr2) / 2.0
+    b, m, r, d, wr = torch.cat((b1, b2)), torch.cat((m1, m2)), torch.cat((r1, r2)), torch.cat((d1, d2)), (wr1 + wr2) / 2.0
+    if AUGMENT_SYMMETRY:
+        b, m, r, d = augment_symmetry(b, m, r, d)  # augment by flipping all games horizontally
+    return b, m, r, d, wr
 
 
 def dump_move_info(model, board_states, moves, rewards):
