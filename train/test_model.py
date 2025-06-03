@@ -9,7 +9,7 @@ from train.model import (
     COLS
 )
 # Need to import from board.py for string_to_board helper and make_move_and_check (used by find_best_move)
-from train.board import string_to_board, make_move_and_check
+import train.board
 
 class TestModel(unittest.TestCase):
     def setUp(self):
@@ -139,7 +139,7 @@ class TestModel(unittest.TestCase):
 
     def test_find_best_move_no_immediate_action(self):
         # A board where no immediate win or block is obvious
-        board = string_to_board( # Using the corrected string_to_board from board.py tests
+        board = train.board.string_to_board_test_format( # Using the corrected string_to_board from board.py tests
             "       " # Row 0 (empty)
             "       " # Row 1
             "       " # Row 2

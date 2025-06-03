@@ -217,10 +217,11 @@ def pretty_print_board(board: torch.Tensor, indent=0):
         print(indentstr + f"│{row_str}│")
     print(indentstr + "└─" + "┴─"  * (board_np.shape[1] - 1) + "┘")
 
-def string_to_board(s):
-    # s is a single string concatenating all rows, e.g., " X O X O X X O X O X O..."
-    # Filter s to get a flat list of piece characters 'X', 'O', ' '
-    pieces = [c for c in s if c in ' XO']
+def string_to_board_test_format(s):
+    # This version expects s to be a single string concatenating all rows,
+    # e.g., "XOXOXOXOXOXOXO..." (42 chars for a 6x7 board)
+    # where each char is 'X', 'O', or ' '.
+    pieces = [c for c in s if c in ' XO'] # Kept for robustness, though 's' should be clean.
     if len(pieces) != 42:
         raise ValueError(f"Input string does not yield 42 pieces after filtering. Got {len(pieces)} pieces. Input: '{s[:100]}...'")
 
@@ -238,6 +239,38 @@ def string_to_board(s):
 
     board_pieces = [charmap[c] for c in pieces]
     return torch.tensor(board_pieces, dtype=torch.int8).reshape(6, 7)
+
+# Original string_to_board, designed to parse pretty_print_board style strings
+def string_to_board(s):
+    s_filtered = [c for c in s if c in ' XO'] # Use a different variable name to avoid confusion
+    s2 = []
+    # This logic assumes 's_filtered' still contains pieces grouped by lines of 13 (7 pieces + 6 spaces)
+    # This was the original bug if s_filtered was flat.
+    # The original intent seems to be that 's' (unfiltered) is passed to the loop logic.
+    # Let's re-evaluate: The original function took the raw string from pretty_print_board (with | etc.)
+    # then filtered it to 'X', 'O', ' '. This flat list was then processed by the s[0:13:2] logic.
+    # This implies the input string 's' to this function is one line of the pretty_print_board
+    # or a structure where this slicing makes sense.
+    # If 's' is the *entire* multi-line pretty_print string:
+    # Example line: "│  O   O      │" -> filtered: [' ', ' ', 'O', ' ', ' ', ' ', 'O', ' ', ' ', ' ', ' ', ' ']
+    # s[0:13:2] would take from this filtered list of one line.
+    # The original main block did: `boardstrings = [''.join(lines[i:i+7]) ...]`
+    # `b = string_to_board(boardstrings[0])` -> `s` is a 7-line string block.
+    # So, the initial filter `s = [c for c in s if c in ' XO']` makes a flat list of ALL X,O,spaces from 7 lines.
+    # Then `s2.extend(s[0:13:2]); s = s[13:]` processes this flat list.
+    # This means it expects 13 characters *from the already filtered flat list* for the first row's pieces,
+    # which is 7 pieces. This is correct if the original pretty_print output for a row has 7 pieces and 6 spaces.
+    # e.g. " X O X O X O " (13 chars). Filtered is the same. s[0:13:2] gets X,X,X,X.
+    # This is the "every other character" logic.
+
+    # Reverting to the exact original code provided in prompt for this function:
+    s_processed = [c for c in s if c in ' XO'] # Renamed to avoid modifying 's' if it's used later by mistake
+    s_for_slicing = s_processed # Use the filtered list for slicing.
+    for i in range(6): # 6 rows
+        s2.extend(s_for_slicing[0:13:2]) # Get 7 pieces by taking every other char from a 13-char segment
+        s_for_slicing = s_for_slicing[13:] # Advance to the next 13-char segment
+    charmap = {' ': 0, 'X': 1, 'O': -1}
+    return torch.tensor([charmap[c] for c in s2], dtype=torch.int8).reshape(6, 7)
 
 def print_board_info(model, board):
     """
@@ -317,7 +350,7 @@ if __name__ == '__main__':
     lines = boardstrings.strip().split('\n')
     boardstrings = [''.join(lines[i:i+7]) for i in range(0, len(lines), 7)]
     
-    b = string_to_board(boardstrings[0])
+    b = string_to_board(boardstrings[0]) # This should use the original pretty_print_board parser
 
     model = load_frozen_model(sys.argv[1])
     print_board_info(model, b)

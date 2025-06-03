@@ -90,7 +90,6 @@ class TestTreeSearch(unittest.TestCase):
         self.mock_main_patcher.stop() # Stop the mock
 
         self.assertEqual(values.shape, (self.cols,))
-        # self.assertEqual(len(mock_model.call_history), 1) # This was the incorrect assertion causing failure
                                                           # Actually, model is called by multiple_rollouts if depth is reached
                                                           # and by sample_moves within the rollout.
                                                           # For depth=1, sample_moves is called once.
