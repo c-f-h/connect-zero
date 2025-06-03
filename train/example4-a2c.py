@@ -19,4 +19,5 @@ if __name__ == "__main__":
     opponents = [
         RandomPunisher()
     ]
-    train_against_opponents(model, opponents, checkpoint_file="ex4_checkpoint.pth", debug=False)
+    train_against_opponents(model, opponents, checkpoint_file="ex4_checkpoint.pth", debug=False,
+                            games_per_batch=50, batches_per_epoch=100)

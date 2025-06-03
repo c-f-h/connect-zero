@@ -12,4 +12,5 @@ if __name__ == "__main__":
         bootstrap_value=False,      # disable A2C - defaults to REINFORCE with baseline
     )
     constr = lambda: Connect4CNN_Mk4(value_head=True)   # model constructor
-    self_play_loop(constr, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-4, fname_prefix="ex3")
+    self_play_loop(constr, games_per_batch=50, batches_per_epoch=100, learning_rate=1e-4, fname_prefix="ex3",
+                   games_per_batch=50, batches_per_epoch=100)
