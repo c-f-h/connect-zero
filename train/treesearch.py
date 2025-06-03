@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .board import make_move_and_check_batch
-from .play import sample_moves
+from board import make_move_and_check_batch
+from play import sample_moves
 
 def multiple_rollouts(initial_boards: torch.Tensor, model: nn.Module, width: int, depth: int, temperature: float = 1.0) -> torch.Tensor:
     from main import REWARD_DISCOUNT

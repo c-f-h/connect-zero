@@ -3,10 +3,10 @@ import torch.nn as nn
 import unittest
 import numpy as np
 
-from train.treesearch import multiple_rollouts, estimate_move_values_from_rollout
-from train.board import string_to_board, make_move_and_check_batch # For test setup
-from train.globals import ROWS, COLS # Import ROWS, COLS from globals
-from train.model import board_to_channels # Potentially for mock model if it uses channels
+from treesearch import multiple_rollouts, estimate_move_values_from_rollout
+from board import string_to_board, make_move_and_check_batch # For test setup
+from globals import ROWS, COLS # Import ROWS, COLS from globals
+from model import board_to_channels # Potentially for mock model if it uses channels
 
 # Define a REWARD_DISCOUNT for testing, as it's imported from main in treesearch.py
 # We need to make sure this is accessible or patched for the treesearch module.

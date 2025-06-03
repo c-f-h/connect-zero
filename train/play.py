@@ -2,8 +2,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from .globals import ROWS, COLS, init_device, get_device
-from .board import make_move_and_check, make_move_and_check_batch, pretty_print_board
+from globals import ROWS, COLS, init_device, get_device
+from board import make_move_and_check, make_move_and_check_batch, pretty_print_board
 
 
 def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> int:

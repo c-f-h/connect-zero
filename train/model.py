@@ -6,8 +6,8 @@ import glob
 
 from typing import Tuple
 
-from .board import make_move_and_check, make_move_and_check_batch
-from .treesearch import estimate_move_values_from_rollout, multiple_rollouts
+from board import make_move_and_check, make_move_and_check_batch
+from treesearch import estimate_move_values_from_rollout, multiple_rollouts
 
 
 # Define board dimensions

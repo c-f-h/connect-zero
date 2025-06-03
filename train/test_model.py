@@ -2,14 +2,14 @@ import torch
 import unittest
 import numpy as np
 
-from train.model import (
+from model import (
     board_to_channels,
     find_best_move,
     ROWS,
     COLS
 )
-# Need to import from board.py for string_to_board helper and make_move_and_check (used by find_best_move)
-import train.board
+
+import board
 
 class TestModel(unittest.TestCase):
     def setUp(self):
@@ -139,7 +139,7 @@ class TestModel(unittest.TestCase):
 
     def test_find_best_move_no_immediate_action(self):
         # A board where no immediate win or block is obvious
-        board = train.board.string_to_board_test_format( # Using the corrected string_to_board from board.py tests
+        b = board.string_to_board_test_format( # Using the corrected string_to_board from board.py tests
             "       " # Row 0 (empty)
             "       " # Row 1
             "       " # Row 2
@@ -147,7 +147,7 @@ class TestModel(unittest.TestCase):
             "   O   " # Row 4, P2 in middle
             "  XOX  " # Row 5, X O X
         )
-        logits = find_best_move(board)
+        logits = find_best_move(b)
         # Expect zeros as per function spec when no win/block
         self.assertTrue(torch.all(logits == 0))
 
