@@ -14,14 +14,14 @@ from league import League
 from play import play, sample_move, sample_moves
 
 RESET_OPTIMIZER = False
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-6
 WEIGHT_DECAY = 0
 OPPONENT_TEMPERATURE = 1.0
 
 GRAD_NORM_CLIPPING = None # 1000.0
 #ENTROPY_BONUS = 0.030   #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-ENTROPY_BONUS = 0.050       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-VALUE_LOSS_WEIGHT = 0.5
+ENTROPY_BONUS = 0.040       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
+VALUE_LOSS_WEIGHT = 0.25 #0.5
 
 NORMALIZE_ADVANTAGE = False       # normalize the advantage estimate per batch
 BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
@@ -29,7 +29,7 @@ KEEP_DRAWS        = True        # whether drawn games are kept in the training d
 
 REWARD_DISCOUNT = 0.98
 
-PPO_CLIP_EPSILON = 0.2
+PPO_CLIP_EPSILON = 0.1
 PPO_EPOCHS = 5
 PPO_TARGET_KL = 0.01
 
@@ -361,6 +361,18 @@ def move_entropy(model, board: torch.Tensor) -> float:
         return entropy.item()
 
 
+def restore_from_file(model, optimizer, cp_file):
+    if os.path.exists(cp_file):
+        checkpoint = torch.load(cp_file, map_location=get_device())
+        model.load_state_dict(checkpoint['model_state_dict'])
+        opt_restored = False
+        if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            opt_restored = True
+        print(f"Loaded model {'and optimizer state ' if opt_restored else ''}from {cp_file}")
+    else:
+        print(f"Checkpoint file {cp_file} doesn't exist; starting with default initialization.")
+
 
 def train_against_opponents(model, opponents, checkpoint_file="best_model.pth",
                             batches_per_epoch=5, games_per_batch=1000, debug=False):
@@ -564,6 +576,60 @@ def self_play_loop(model_constructor, ref_model, games_per_batch=50, batches_per
         #show_winrate(model, ref_model, num_games=300)
 
 
+def ping_pong_training(model_A, model_A_fname, model_B, model_B_fname, games_per_batch=200, batches_per_epoch=10, learning_rate=1e-3, win_threshold=0.52):
+    """Train two models against each other in ping-pong training."""
+    device = get_device()
+    optimizer_A = optim.AdamW(model_A.parameters(), lr=learning_rate)
+    optimizer_B = optim.AdamW(model_B.parameters(), lr=learning_rate)
+    restore_from_file(model_A, optimizer_A, model_A_fname)
+    restore_from_file(model_B, optimizer_B, model_B_fname)
+
+    wrplot = UpdatablePlot(labels=[['Win rate (A vs B)', 'Entropy', "Returns st.d."],
+                                   ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
+
+    # ----------------- MAIN TRAINING LOOP ----------------- #
+    epoch = 0
+    while True:
+        for batchnr in range(batches_per_epoch):
+            board_states, actions, returns, done, wr = play_multiple_against_model(model_A, model_B, num_games=games_per_batch)
+            print(f" wr: {wr*100:2.0f}%")
+            policy_loss, value_loss, entropy = update_policy(model_A, optimizer_A, board_states, actions, returns, done, algorithm=ALGORITHM)
+            g_stats.add('policy_loss', policy_loss)
+            g_stats.add('value_loss', value_loss)
+            g_stats.add('entropy', entropy)
+
+        epoch += 1
+        g_stats.aggregate()
+        wrplot.update_from(g_stats, [
+            'winrate', 'entropy', 'rewards_std',
+            'policy_loss', 'value_loss', 'advantage_std'
+        ])
+        print(f"Epoch {epoch} done. Avg loss: {g_stats.last('policy_loss'):.4f}. Avg game length: {g_stats.last('game_length'):.2f}. Win rate: {100*g_stats.last('winrate'):.2f}%")
+        wrplot.poll()
+
+        print('Playing model B against model A...')
+        play(model_B, model_A, output=True)
+
+        print(f"\nEpoch {epoch} done.")
+        if g_stats.last('winrate') > win_threshold:
+            model_A, model_B = model_B, model_A
+            optimizer_A, optimizer_B = optimizer_B, optimizer_A
+            print(' ========================= SWAPPED MODELS A AND B =========================')
+
+        if epoch % 5 == 0:
+            model_A_fname = 'model_A.pth'
+            model_B_fname = 'model_B.pth'
+            torch.save({
+                'model_state_dict': model_A.state_dict(),
+                'optimizer_state_dict': optimizer_A.state_dict()
+            }, model_A_fname)
+            torch.save({
+                'model_state_dict': model_B.state_dict(),
+                'optimizer_state_dict': optimizer_B.state_dict()
+            }, model_B_fname)
+            print(f"Models saved to {model_A_fname} and {model_B_fname}.")
+
+
 if __name__ == "__main__":
     device = init_device(True)
 
@@ -586,16 +652,18 @@ if __name__ == "__main__":
     #prof.export_chrome_trace("my_trace.json")
 
 
-    import sys
-    debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
+    #model = Connect4CNN_Mk4(value_head=True).to(device)
+    #opponents = [
+    #    load_frozen_model('CNN-Mk4:selfsolo/0102.pth').to(device)
+    #]
+    #set_params(opponent_temperature=1.0)
+    #train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=250)
 
-    model = Connect4CNN_Mk4(value_head=True).to(device)
-    opponents = [
-        RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts11.pth').to(device), width=3, depth=6, temperature=1.0),
-    ]
+    #model = Connect4CNN_Mk4(value_head=True).to(device)
+    ##model_improver = lambda m: RolloutModel(m, width=3, depth=4)
+    #model_improver = lambda m: RolloutModel(m, width=4, depth=4)
+    #league = League(model_names=None, dir="selfsolo", model_string="CNN-Mk4", device=device)
+    #self_play_with_league(model, league, win_threshold=0.55, model_improver=model_improver, batches_per_epoch=20, games_per_batch=100)
 
-    train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=250, debug=debug)
-
-    #model = Connect4CNN_Mk4(value_head=True)
-    #league = League(model_names=None, dir="selfplay", model_string="CNN-Mk4", device=DEVICE)
-    #self_play_with_league(model, league, win_threshold=0.75)
+    ping_pong_training(Connect4CNN_Mk4(value_head=True).to(device), 'model_A.pth', Connect4CNN_Mk4(value_head=True).to(device), 'model_B.pth',
+        games_per_batch=200, batches_per_epoch=10, learning_rate=LEARNING_RATE, win_threshold=0.52)
