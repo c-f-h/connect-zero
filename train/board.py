@@ -218,13 +218,26 @@ def pretty_print_board(board: torch.Tensor, indent=0):
     print(indentstr + "└─" + "┴─"  * (board_np.shape[1] - 1) + "┘")
 
 def string_to_board(s):
-    s = [c for c in s if c in ' XO']
+    # s is a single string concatenating all rows, e.g., " X O X O X X O X O X O..."
+    # Filter s to get a flat list of piece characters 'X', 'O', ' '
+    pieces = [c for c in s if c in ' XO']
+    if len(pieces) != 42:
+        raise ValueError(f"Input string does not yield 42 pieces after filtering. Got {len(pieces)} pieces. Input: '{s[:100]}...'")
+
     s2 = []
-    for i in range(6):
-        s2.extend(s[0:13:2])        # remove spaces between the valid columns
-        s = s[13:]
+    # The characters in 'pieces' are the actual pieces for the board, row by row.
+    # No need for slicing like s[0:13:2] which assumed original spacing.
+    # We just need to convert them.
+    # The loop structure was incorrect for a pre-filtered list of pieces.
+    # s2 should just be 'pieces'.
     charmap = {' ': 0, 'X': 1, 'O': -1}
-    return torch.tensor([charmap[c] for c in s2], dtype=torch.int8).reshape(6, 7)
+    # Ensure all characters in 'pieces' are valid before mapping
+    for p_char in pieces:
+        if p_char not in charmap:
+            raise ValueError(f"Invalid character '{p_char}' in input string pieces. Valid are 'X', 'O', ' '.")
+
+    board_pieces = [charmap[c] for c in pieces]
+    return torch.tensor(board_pieces, dtype=torch.int8).reshape(6, 7)
 
 def print_board_info(model, board):
     """
