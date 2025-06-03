@@ -90,7 +90,7 @@ def play(model1, model2, output=False):
             model1, model2 = model2, model1 # Swap models for the next turn
 
 
-def play_parallel(model1, model2, num_games):
+def play_parallel(model1, model2, num_games, temperature = 1.0):
     """Have two models play num_games against each other in parallel.
     Returns (model 1 wins, model 2 wins, draws)."""
     model1.eval()
@@ -106,7 +106,7 @@ def play_parallel(model1, model2, num_games):
         iact = torch.where(active)[0]
         while torch.any(active):
 
-            moves = sample_moves(model1, board[iact])
+            moves = sample_moves(model1, board[iact], temperature=temperature)
             board[iact], wins, draws = make_move_and_check_batch(board[iact], moves)
 
             active[iact] &= ~(wins | draws) # deactivate games that are won or drawn
@@ -125,13 +125,13 @@ if __name__ == '__main__':
     import sys
     from model import load_frozen_model
 
-    init_device(True)
+    device = init_device(False)
 
     model_names = sys.argv[1:]
     if len(model_names) != 2:
         print('Please pass two model names.')
         sys.exit()
     
-    models = [load_frozen_model(name) for name in model_names]
+    models = [load_frozen_model(name).to(device) for name in model_names]
     
     play(models[0], models[1], output=True)

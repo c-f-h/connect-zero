@@ -160,7 +160,8 @@ def run_tournament(
 def run_fast_tournament(
     models: List[Any],
     num_rounds: int = NUM_ROUNDS,
-    model_names: Optional[List[str]] = None
+    model_names: Optional[List[str]] = None,
+    temperature: float = 1.0
 ) -> Dict[str, float]:
     """
     Runs a round-robin tournament.
@@ -193,7 +194,7 @@ def run_fast_tournament(
             name1, name2 = name_list[i], name_list[j]
             model1, model2 = models[i], models[j]
 
-            (w1, w2, draws) = play_parallel(model1, model2, num_rounds)
+            (w1, w2, draws) = play_parallel(model1, model2, num_rounds, temperature=temperature)
             total_games += num_rounds
 
             win_table[i, j] += w1
@@ -243,11 +244,12 @@ def win_rate(model1, model2, num_games=500):
     return (w1 + w1b) / n, (dr + drb) / n
 
 
-def show_tournament(all_models, model_names, num_games=300):
+def show_tournament(all_models, model_names, num_games=300, temperature=1.0):
     final_ratings = run_fast_tournament(
         models=all_models,
         num_rounds=num_games,
         model_names=model_names,
+        temperature=temperature
     )
 
     if final_ratings:
@@ -263,7 +265,8 @@ def show_tournament(all_models, model_names, num_games=300):
 @click.command()
 @click.argument('model_names', nargs=-1)
 @click.option('-n', '--num-games', default=300, help='Number of games to play in the tournament.')
-def main_run(model_names, num_games=300):
+@click.option('-t', '--temperature', default=1.0, type=float, help='Temperature parameter for sampling moves.')
+def main_run(model_names, num_games=300, temperature=1.0):
     from model import load_frozen_model, RolloutModel
     from globals import init_device
 
@@ -273,7 +276,7 @@ def main_run(model_names, num_games=300):
     for m in models:
         print(f"Model: {m.__class__.__name__} -- {sum(p.numel() for p in m.parameters())} parameters")
 
-    show_tournament(models, model_names, num_games=num_games)
+    show_tournament(models, model_names, num_games=num_games, temperature=temperature)
 
 
 def benchmark_run():
