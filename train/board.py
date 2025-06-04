@@ -217,6 +217,16 @@ def pretty_print_board(board: torch.Tensor, indent=0):
         print(indentstr + f"│{row_str}│")
     print(indentstr + "└─" + "┴─"  * (board_np.shape[1] - 1) + "┘")
 
+def format_board(board: torch.Tensor) -> str:
+    """Format the board as a string for easy printing."""
+    symbols = {0: " ", 1: "X", -1: "O"}  # Define symbols for empty, player 1, and player 2
+    rows = []
+    for row in range(board.shape[0]):
+        row_str = " ".join(symbols[board[row, col].item()] for col in range(board.shape[1]))
+        rows.append(f"│{row_str}│")
+    rows.append("└─" + "┴─" * (board.shape[1] - 1) + "┘")
+    return rows
+
 def string_to_board(s):
     s = [c for c in s if c in ' XO']
     s2 = []

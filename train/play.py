@@ -6,7 +6,7 @@ from globals import ROWS, COLS, init_device, get_device
 from board import make_move_and_check, make_move_and_check_batch, pretty_print_board
 
 
-def sample_move(model, board: torch.Tensor, epsilon=0.0, output_probs=False) -> int:
+def sample_move(model, board: torch.Tensor, epsilon: float = 0.0, output_probs: bool = False) -> int:
     """Sample a move using the model's output logits."""
     value = None
     if epsilon > 0 and torch.rand(1).item() < epsilon:
@@ -56,7 +56,7 @@ def sample_moves(model, boards: torch.Tensor, temperature: float = 1.0) -> torch
     return moves
 
 
-def play(model1, model2, output=False):
+def play(model1, model2, output: bool = False) -> int:
     """Have two models play against each other."""
     model1.eval()
     model2.eval()
@@ -90,7 +90,7 @@ def play(model1, model2, output=False):
             model1, model2 = model2, model1 # Swap models for the next turn
 
 
-def play_parallel(model1, model2, num_games, temperature = 1.0):
+def play_parallel(model1, model2, num_games: int, temperature: float = 1.0) -> tuple[int, int, int]:
     """Have two models play num_games against each other in parallel.
     Returns (model 1 wins, model 2 wins, draws)."""
     model1.eval()
@@ -119,6 +119,34 @@ def play_parallel(model1, model2, num_games, temperature = 1.0):
             model1, model2 = model2, model1 # Swap models for the next turn
 
     return (winner == 1).sum().item(), (winner == 2).sum().item(), (winner == 0).sum().item()
+
+
+def play_parallel_to_depth(
+    model1: torch.nn.Module, model2: torch.nn.Module,
+    num_games: int, num_moves: int, temperature: float = 1.0
+) -> torch.Tensor:
+    """
+    Play num_games in parallel for exactly num_moves moves (plies), alternating models.
+    Returns:
+        board: Tensor of shape (num_games, ROWS, COLS) with the resulting board states.
+    """
+    model1.eval()
+    model2.eval()
+    device = get_device()
+    with torch.no_grad():
+        board = torch.zeros((num_games, ROWS, COLS), dtype=torch.int8, device=device)
+        active = torch.ones((num_games,), dtype=torch.bool, device=device)
+        for move_idx in range(num_moves):
+            iact = torch.where(active)[0]
+            if iact.numel() == 0:
+                break
+            moves = sample_moves(model1, board[iact], temperature=temperature)
+            board[iact], wins, draws = make_move_and_check_batch(board[iact], moves)
+            # Optionally, you could deactivate finished games, but we keep all boards for output
+            board[iact] *= -1
+            # Swap models for next turn
+            model1, model2 = model2, model1
+    return board
 
 
 if __name__ == '__main__':
