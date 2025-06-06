@@ -227,6 +227,19 @@ def format_board(board: torch.Tensor) -> str:
     rows.append("└─" + "┴─" * (board.shape[1] - 1) + "┘")
     return rows
 
+def string_to_board_test_format(s):
+    # This version expects s to be a single string concatenating all rows,
+    # e.g., "XOXOXOXOXOXOXO..." (42 chars for a 6x7 board)
+    # where each char is 'X', 'O', or ' '.
+    pieces = [c for c in s if c in ' XO'] # Kept for robustness, though 's' should be clean.
+    if len(pieces) != 42:
+        raise ValueError(f"Input string does not yield 42 pieces after filtering. Got {len(pieces)} pieces. Input: '{s[:100]}...'")
+
+    charmap = {' ': 0, 'X': 1, 'O': -1}
+    board_pieces = [charmap[c] for c in pieces]
+    return torch.tensor(board_pieces, dtype=torch.int8).reshape(6, 7)
+
+# Original string_to_board, designed to parse pretty_print_board style strings
 def string_to_board(s):
     s = [c for c in s if c in ' XO']
     s2 = []
