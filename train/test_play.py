@@ -5,6 +5,7 @@ from board import pretty_print_board
 import torch
 
 from play import play_parallel
+from alpha import play_both_sides
 
 def test_play_parallel():
     init_device(False)
@@ -37,3 +38,25 @@ def test_play_parallel_with_results():
         assert torch.equal(bs1, bs2)
     assert torch.equal(m, m2)
     assert torch.equal(r, r2)
+
+def test_play_both_sides():
+    init_device(False)
+    model = RandomConnect4()
+    NUM_GAMES = 50
+
+    torch.manual_seed(0)
+    b, m, outcomes, wr = play_both_sides(model, NUM_GAMES, temperature=1.0)
+    ns = len(b)  # number of board states
+    assert b.shape == (ns, 6, 7)  # 2 players, 6 rows, 7 columns
+    assert m.shape == (ns,)
+    assert outcomes.shape == (ns,)
+    assert 0 <= wr <= 1
+
+    for turn in range(6):
+        # Until move 7, we know that no games have ended
+        assert torch.equal(outcomes[turn * NUM_GAMES:(turn + 1) * NUM_GAMES], -outcomes[(turn + 1) * NUM_GAMES:(turn + 2) * NUM_GAMES])
+
+        for k in range(NUM_GAMES):
+            # check that exactly one move was made in each game
+            assert (b[turn * NUM_GAMES + k] == -b[(turn + 1) * NUM_GAMES + k]).sum().item() == 41
+
