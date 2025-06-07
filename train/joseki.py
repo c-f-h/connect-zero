@@ -17,8 +17,9 @@ def board_to_hashable(board: torch.Tensor) -> bytes:
 @click.argument('model_names', nargs=-1)
 @click.option('-n', '--num-games', default=100, help='Number of games to play.')
 @click.option('-d', '--depth', default=5, help='Number of moves to play (depth).')
+@click.option('-t', '--temperature', default=1.0, type=float, help='Temperature parameter for sampling moves.')
 @click.option("--cuda", is_flag=True, help="Use CUDA if available.")
-def main(model_names, num_games, depth, cuda):
+def main(model_names, num_games, depth, cuda, temperature):
     device = init_device(cuda)
     if len(model_names) == 1:
         model_names = [model_names[0], model_names[0]]
@@ -28,7 +29,7 @@ def main(model_names, num_games, depth, cuda):
     model1 = load_frozen_model(model_names[0]).to(device)
     model2 = load_frozen_model(model_names[1]).to(device)
 
-    boards = play_parallel_to_depth(model1, model2, num_games, depth)
+    boards = play_parallel_to_depth(model1, model2, num_games, depth, temperature=temperature)
     if depth % 2 == 1:
         boards = -boards
     # Flatten boards to hashable representations
