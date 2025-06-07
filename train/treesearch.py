@@ -100,16 +100,30 @@ if __name__ == '__main__':
 │  X X O X O  │
 │O O O X O X  │
 └─┴─┴─┴─┴─┴─┴─┘
+│        O    │
+│      O O    │
+│      O X O  │
+│X   X X O X  │
+│X   O X X X  │
+│O O X X O O  │
+└─┴─┴─┴─┴─┴─┴─┘
+│             │
+│             │
+│        O    │
+│        X    │
+│  O     X    │
+│X O O O X    │
+└─┴─┴─┴─┴─┴─┴─┘
 """
 
     lines = boardstrings.strip().split('\n')
     boardstrings = [''.join(lines[i:i+7]) for i in range(0, len(lines), 7)]
 
-    b = string_to_board(boardstrings[1])
+    b = string_to_board(boardstrings[2])
     pretty_print_board(b)
 
     #model = RolloutModel(load_frozen_model('CNN-Mk4:mk4-ts1.pth'), width=4, depth=4)
-    basemodel = load_frozen_model('CNN-Mk4:selfsolo/0104.pth')
+    basemodel = load_frozen_model('CNN-Mk4:model_B_5.pth')
     model = RolloutModel(basemodel, width=4, depth=4)
     with torch.no_grad():
         logits, value = model(b)

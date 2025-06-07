@@ -3,14 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from main import RESET_OPTIMIZER, g_stats, mask_invalid_moves_batch, VALUE_LOSS_WEIGHT
+from main import g_stats, mask_invalid_moves_batch, VALUE_LOSS_WEIGHT, augment_symmetry
 from stats import UpdatablePlot
 from globals import init_device, get_device, ROWS, COLS
-from model import make_move_and_check_batch, RolloutModel, Connect4CNN_Mk4
+from model import make_move_and_check_batch, RolloutModel, Connect4CNN_Mk4, load_frozen_model
 from play import sample_moves, play
 from tournament import win_rate
+from board import pretty_print_board
 
 import os
+
+RESET_OPTIMIZER = True
+LEARNING_RATE   = 1e-4
 
 def play_both_sides(model, num_games, temperature=1.0):
     """Have a model play against itself. Returns all board states, moves, and outcomes."""
@@ -64,6 +68,7 @@ def play_both_sides(model, num_games, temperature=1.0):
     all_gameidxs = torch.cat(all_gameidxs)
 
     wr = (outcome == 1).sum().item() / num_games
+    g_stats.add('game_length', game_length.sum().item() / num_games)
 
     # interleave outcomes with -outcomes
     all_outcomes = torch.stack([outcome, -outcome], dim=1).view(-1)
@@ -71,7 +76,7 @@ def play_both_sides(model, num_games, temperature=1.0):
     return all_board_states, all_moves, all_outcomes[all_gameidxs], wr
 
 
-def update_alpha(model, states, actions, outcomes):
+def update_alpha(model, optimizer, states, actions, outcomes):
     """Update the model using the given board states, actions, and outcomes."""
     device = get_device()
     model.train()
@@ -85,16 +90,27 @@ def update_alpha(model, states, actions, outcomes):
     entropy = -(log_probs * torch.exp(log_probs)).sum(1)           # (B,)
 
     # choose logprobs of actually taken actions: (B, C) -> (B, 1) -> (B,)
-    log_probs_taken = torch.gather(log_probs, dim=1, index=actions.unsqeeze(1)).squeeze(1)
+    log_probs_taken = torch.gather(log_probs, dim=1, index=actions.unsqueeze(1)).squeeze(1)
 
-    # Calculate value loss
-    value_loss = nn.functional.mse_loss(values, outcomes)
+    #print(log_probs_taken)
+    #k_worst = torch.argmin(log_probs_taken).item()
+    #print(k_worst)
+    #pretty_print_board(states[k_worst])
+    #print(actions[k_worst])
+    #print(logits[k_worst])
 
     policy_loss = -log_probs_taken.sum()
+    value_loss = nn.functional.mse_loss(values, outcomes.float(), reduction='sum')
+    total_loss = policy_loss + 0.5 * value_loss
 
-    total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss
+    optimizer.zero_grad()
+    total_loss.backward()
+    gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
+    print(f'norm(grad) = {gradnorm:.4f}')
+    optimizer.step()
 
-    return policy_loss.item(), value_loss.item(), entropy.item()
+    bs = states.shape[0]         # batch size
+    return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()      # report mean so as not to vary with batch size
 
 
 def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_batch=100, batches_per_epoch=20, learning_rate=1e-3,
@@ -123,7 +139,7 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
         checkpoint = torch.load(best_cp_file, map_location=get_device())
         model_cp.load_state_dict(checkpoint['model_state_dict'])
 
-    wrplot = UpdatablePlot(labels=[['Win rate (against ref)', 'Entropy', "Returns st.d."],
+    wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', "Returns st.d."],
                                    ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
 
     # ----------------- MAIN TRAINING LOOP ----------------- #
@@ -133,10 +149,17 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
 
             improved_model = model_improver(model)
             board_states, actions, outcomes, wr = play_both_sides(improved_model, num_games=games_per_batch, temperature=1.0)
-            policy_loss, value_loss, entropy = update_alpha(model, board_states, actions, outcomes)
+
+            done_dummy = torch.zeros((1,))
+            board_states, actions, outcomes, done_dummy = augment_symmetry(board_states, actions, outcomes, done_dummy)
+
+            policy_loss, value_loss, entropy = update_alpha(model, optimizer, board_states, actions, outcomes)
+            g_stats.add('winrate', wr)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
             g_stats.add('entropy', entropy)
+
+            print(f'Batch size: {board_states.shape[0]}, win rate (P1): {wr*100:.1f}%')
 
             if batchnr % 20 == min(19, batches_per_epoch - 1):
                 if ref_model is not None:
@@ -175,7 +198,8 @@ if __name__ == "__main__":
 
     model_constr = lambda: Connect4CNN_Mk4(value_head=True)
     model_improver = lambda m: RolloutModel(m, width=4, depth=4)
-    train_alpha_mini(model_constr, model_improver, ref_model=None,
-                      games_per_batch=100, batches_per_epoch=20, learning_rate=1e-6,
+    ref_model = load_frozen_model('CNN-Mk4:model_B_5.pth').to(device)
+
+    train_alpha_mini(model_constr, model_improver, ref_model=ref_model,
+                      games_per_batch=50, batches_per_epoch=10, learning_rate=LEARNING_RATE,
                       win_threshold=0.55, fname_prefix="alpha")
-    
