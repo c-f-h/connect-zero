@@ -14,7 +14,7 @@ from board import pretty_print_board
 import os
 
 RESET_OPTIMIZER = True
-LEARNING_RATE   = 1e-4
+LEARNING_RATE   = 1e-6
 
 def play_both_sides(model, num_games, temperature=1.0):
     """Have a model play against itself. Returns all board states, moves, and outcomes."""
@@ -197,7 +197,7 @@ if __name__ == "__main__":
     device = init_device(True)
 
     model_constr = lambda: Connect4CNN_Mk4(value_head=True)
-    model_improver = lambda m: RolloutModel(m, width=4, depth=4)
+    model_improver = lambda m: RolloutModel(m, width=4, depth=4, temperature=0.75)
     ref_model = load_frozen_model('CNN-Mk4:model_B_5.pth').to(device)
 
     train_alpha_mini(model_constr, model_improver, ref_model=ref_model,
