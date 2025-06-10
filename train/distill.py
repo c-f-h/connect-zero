@@ -26,10 +26,7 @@ def distill(teacher, student, optimizer, num_batches: int, batch_size: int = 50)
 
     for i in range(num_batches):
         # Generate games using the teacher model
-        board_states, actions, rewards = play_multiple_against_model(teacher, teacher, batch_size)
-
-        # Prepare inputs for the student model
-        states = torch.stack(board_states).to(device)  # (B, R, C)
+        states, actions, rewards, done, wr = play_multiple_against_model(teacher, teacher, batch_size, augment_sym=True)
 
         # Teacher model outputs
         with torch.no_grad():
@@ -74,11 +71,11 @@ import click
 def main_run(teacher, student, num_batches=250, batch_size=50, lr=1e-3):
     from model import load_frozen_model
     from globals import init_device
-    init_device(False)
+    device = init_device(True)
 
-    teacher = load_frozen_model(teacher)
+    teacher = load_frozen_model(teacher).to(device)
     #student = load_frozen_model("CNN-Mk4:best_cp.pth")
-    student = load_frozen_model(student)
+    student = load_frozen_model(student).to(device)
     optimizer = torch.optim.AdamW(student.parameters(), lr=lr)
 
     distill(teacher, student, optimizer, num_batches=num_batches, batch_size=batch_size)
