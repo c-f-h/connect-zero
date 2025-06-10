@@ -3,18 +3,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from main import g_stats, mask_invalid_moves_batch, VALUE_LOSS_WEIGHT, augment_symmetry
+from main import g_stats, mask_invalid_moves_batch, augment_symmetry
 from stats import UpdatablePlot
 from globals import init_device, get_device, ROWS, COLS
-from model import make_move_and_check_batch, RolloutModel, Connect4CNN_Mk4, load_frozen_model
+from model import make_move_and_check_batch, RolloutModel, Connect4CNN_Mk4, Connect4MLP3, load_frozen_model
 from play import sample_moves, play
 from tournament import win_rate
 from board import pretty_print_board
 
 import os
 
-RESET_OPTIMIZER = True
-LEARNING_RATE   = 1e-6
+RESET_OPTIMIZER = False
+LEARNING_RATE   = 1e-4
+VALUE_LOSS_WEIGHT = 1.5
+ROLLOUT_TEMPERATURE = 1.0
 
 def play_both_sides(model, num_games, temperature=1.0):
     """Have a model play against itself. Returns all board states, moves, and outcomes."""
@@ -101,7 +103,7 @@ def update_alpha(model, optimizer, states, actions, outcomes, debug=False):
 
     policy_loss = -log_probs_taken.sum()
     value_loss = nn.functional.mse_loss(values, outcomes.float(), reduction='sum')
-    total_loss = policy_loss + 0.5 * value_loss
+    total_loss = policy_loss + VALUE_LOSS_WEIGHT * value_loss
 
     optimizer.zero_grad()
     total_loss.backward()
@@ -112,24 +114,27 @@ def update_alpha(model, optimizer, states, actions, outcomes, debug=False):
     if debug:
         import numpy as np
         debug_board = torch.zeros((1, ROWS, COLS), dtype=torch.int8, device=device)  # which board state to debug
+        debug_board[0,5,3] = 1
+        #debug_board[0,5,0] = -1
+        #debug_board[0,4,2] = 1
+        debug_board *= -1
         debug_states = torch.where((states == debug_board).all(dim=(1, 2)))[0]  # find indices of all board state to debug
         if debug_states.numel() > 0:
             k = debug_states[0].item()
             pretty_print_board(debug_board[0])
-            initial_logits = logits.detach().cpu().numpy()
-            initial_probs = F.softmax(logits[k]).detach().cpu().numpy()
+            initial_probs = F.softmax(logits[k], dim=-1).detach().cpu().numpy()
             initial_entropy = -(initial_probs * np.log(initial_probs)).sum()
             np.set_printoptions(precision=3)
-            print(f"Initial logits: {initial_logits[k]}")
-            print(f"Initial probs: {initial_probs}, entropy: {initial_entropy:.4f}")
+            print(f"  Initial probs: {initial_probs}, entropy: {initial_entropy:.4f}           value: {values[k].item():.2f}")
             # count how often each action was taken
-            _, counts = np.unique(actions[debug_states].cpu().numpy(), return_counts=True)
-            print(f"Actions taken: {counts}")
+            unique_actions, counts = np.unique(actions[debug_states].cpu().numpy(), return_counts=True)
+            print("  Actions taken:")
+            for a, c in zip(unique_actions, counts):
+                print('    ', int(a), ':', int(c))
             final_logits = model(debug_board)[0].detach().cpu()
             final_probs = F.softmax(final_logits[0], dim=-1)
-            print(f"Final logits: {final_logits[0].numpy()}")
             final_entropy = -(final_probs * torch.log(final_probs)).sum().item()
-            print(f"Final probs: {final_probs.numpy()}, entropy: {final_entropy:.4f}")
+            print(f"  Final probs: {final_probs.numpy()}, entropy: {final_entropy:.4f}")
 
     bs = states.shape[0]         # batch size
     return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()      # report mean so as not to vary with batch size
@@ -145,7 +150,7 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
 
     # Create two copies of the model
     model = model_constructor().to(device)
-    model_cp = model_constructor().to(device)
+    #model_cp = model_constructor().to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
@@ -153,13 +158,13 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
         print(f"Loading model from {cp_file}")
         checkpoint = torch.load(cp_file, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        model_cp.load_state_dict(model.state_dict())  # Copy the model state to the checkpoint model
+        #model_cp.load_state_dict(model.state_dict())  # Copy the model state to the checkpoint model
         if (not RESET_OPTIMIZER) and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    if os.path.exists(best_cp_file):
-        print(f"Loading best model from {best_cp_file}")
-        checkpoint = torch.load(best_cp_file, map_location=get_device())
-        model_cp.load_state_dict(checkpoint['model_state_dict'])
+    #if os.path.exists(best_cp_file):
+    #    print(f"Loading best model from {best_cp_file}")
+    #    checkpoint = torch.load(best_cp_file, map_location=get_device())
+    #    model_cp.load_state_dict(checkpoint['model_state_dict'])
 
     wrplot = UpdatablePlot(labels=[['Win rate', 'Entropy', "Returns st.d."],
                                    ['Policy loss', 'Value loss', 'Advantage st.d.']], show_last_n=200)
@@ -170,7 +175,7 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
         for batchnr in range(batches_per_epoch):
 
             improved_model = model_improver(model)
-            board_states, actions, outcomes, wr = play_both_sides(improved_model, num_games=games_per_batch, temperature=1.0)
+            board_states, actions, outcomes, wr = play_both_sides(improved_model, num_games=games_per_batch)
 
             done_dummy = torch.zeros((1,))
             board_states, actions, outcomes, done_dummy = augment_symmetry(board_states, actions, outcomes, done_dummy)
@@ -218,10 +223,10 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
 if __name__ == "__main__":
     device = init_device(True)
 
-    model_constr = lambda: Connect4CNN_Mk4(value_head=True)
-    model_improver = lambda m: RolloutModel(m, width=4, depth=4, temperature=0.75)
+    model_constr = Connect4MLP3
+    model_improver = lambda m: RolloutModel(m, width=4, depth=4, temperature=ROLLOUT_TEMPERATURE)
     ref_model = load_frozen_model('CNN-Mk4:model_B_5.pth').to(device)
 
     train_alpha_mini(model_constr, model_improver, ref_model=ref_model,
-                      games_per_batch=50, batches_per_epoch=10, learning_rate=LEARNING_RATE,
-                      win_threshold=0.55, fname_prefix="alpha")
+                      games_per_batch=100, batches_per_epoch=10, learning_rate=LEARNING_RATE,
+                      win_threshold=0.55, fname_prefix="mlpalpha")
