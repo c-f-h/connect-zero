@@ -76,7 +76,7 @@ def play_both_sides(model, num_games, temperature=1.0):
     return all_board_states, all_moves, all_outcomes[all_gameidxs], wr
 
 
-def update_alpha(model, optimizer, states, actions, outcomes):
+def update_alpha(model, optimizer, states, actions, outcomes, debug=False):
     """Update the model using the given board states, actions, and outcomes."""
     device = get_device()
     model.train()
@@ -108,6 +108,28 @@ def update_alpha(model, optimizer, states, actions, outcomes):
     gradnorm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None]).item()
     print(f'norm(grad) = {gradnorm:.4f}')
     optimizer.step()
+
+    if debug:
+        import numpy as np
+        debug_board = torch.zeros((1, ROWS, COLS), dtype=torch.int8, device=device)  # which board state to debug
+        debug_states = torch.where((states == debug_board).all(dim=(1, 2)))[0]  # find indices of all board state to debug
+        if debug_states.numel() > 0:
+            k = debug_states[0].item()
+            pretty_print_board(debug_board[0])
+            initial_logits = logits.detach().cpu().numpy()
+            initial_probs = F.softmax(logits[k]).detach().cpu().numpy()
+            initial_entropy = -(initial_probs * np.log(initial_probs)).sum()
+            np.set_printoptions(precision=3)
+            print(f"Initial logits: {initial_logits[k]}")
+            print(f"Initial probs: {initial_probs}, entropy: {initial_entropy:.4f}")
+            # count how often each action was taken
+            _, counts = np.unique(actions[debug_states].cpu().numpy(), return_counts=True)
+            print(f"Actions taken: {counts}")
+            final_logits = model(debug_board)[0].detach().cpu()
+            final_probs = F.softmax(final_logits[0], dim=-1)
+            print(f"Final logits: {final_logits[0].numpy()}")
+            final_entropy = -(final_probs * torch.log(final_probs)).sum().item()
+            print(f"Final probs: {final_probs.numpy()}, entropy: {final_entropy:.4f}")
 
     bs = states.shape[0]         # batch size
     return policy_loss.item() / bs, value_loss.item() / bs, entropy.mean().item()      # report mean so as not to vary with batch size
@@ -153,7 +175,7 @@ def train_alpha_mini(model_constructor, model_improver, ref_model, games_per_bat
             done_dummy = torch.zeros((1,))
             board_states, actions, outcomes, done_dummy = augment_symmetry(board_states, actions, outcomes, done_dummy)
 
-            policy_loss, value_loss, entropy = update_alpha(model, optimizer, board_states, actions, outcomes)
+            policy_loss, value_loss, entropy = update_alpha(model, optimizer, board_states, actions, outcomes, debug=False)
             g_stats.add('winrate', wr)
             g_stats.add('policy_loss', policy_loss)
             g_stats.add('value_loss', value_loss)
