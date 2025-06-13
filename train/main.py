@@ -13,20 +13,19 @@ from tournament import run_fast_tournament, win_rate
 from league import League
 from play import play, sample_move, sample_moves
 
-RESET_OPTIMIZER = False
-LEARNING_RATE = 1e-6
+RESET_OPTIMIZER = True
+LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0
 OPPONENT_TEMPERATURE = 1.0
 
 GRAD_NORM_CLIPPING = None # 1000.0
 #ENTROPY_BONUS = 0.030   #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
 ENTROPY_BONUS = 0.040       #0.075-0.08 is good for exploration; lower to improve performance once sufficiently explored
-VALUE_LOSS_WEIGHT = 0.25 #0.5
+VALUE_LOSS_WEIGHT = 0.5
 
 NORMALIZE_ADVANTAGE = False       # normalize the advantage estimate per batch
 BOOTSTRAP_VALUE   = True        # use Actor-Critic (A2C) for value bootstrapping; if off, use direct Monte Carlo samping
 KEEP_DRAWS        = True        # whether drawn games are kept in the training data (reward 0) or discarded
-AUGMENT_SYMMETRY  = False       # augment the training data with mirror symmetry (flipping the board horizontally)
 
 REWARD_DISCOUNT = 0.98
 
@@ -34,7 +33,7 @@ PPO_CLIP_EPSILON = 0.1
 PPO_EPOCHS = 5
 PPO_TARGET_KL = 0.01
 
-ALGORITHM = "PPO"
+ALGORITHM = "A2C"
 
 def set_params(
     learning_rate=1e-4,
@@ -168,11 +167,11 @@ def augment_symmetry(boards: torch.Tensor, moves: torch.Tensor, rewards: torch.T
     return torch.cat((boards, flip_boards)), torch.cat((moves, flip_moves)), torch.cat((rewards, rewards)), torch.cat((done, done))
     
 
-def play_multiple_against_model(model, opponent, num_games: int, opponent_temperature=1.0):
+def play_multiple_against_model(model, opponent, num_games: int, opponent_temperature=1.0, augment_sym=False):
     b1, m1, r1, d1, wr1 = play_parallel_with_results(model, opponent, track_player=0, num_games=num_games//2, opponent_temperature=opponent_temperature)
     b2, m2, r2, d2, wr2 = play_parallel_with_results(opponent, model, track_player=1, num_games=num_games//2, opponent_temperature=opponent_temperature)
     b, m, r, d, wr = torch.cat((b1, b2)), torch.cat((m1, m2)), torch.cat((r1, r2)), torch.cat((d1, d2)), (wr1 + wr2) / 2.0
-    if AUGMENT_SYMMETRY:
+    if augment_sym:
         b, m, r, d = augment_symmetry(b, m, r, d)  # augment by flipping all games horizontally
     return b, m, r, d, wr
 
@@ -663,12 +662,12 @@ if __name__ == "__main__":
     #prof.export_chrome_trace("my_trace.json")
 
 
-    #model = Connect4CNN_Mk4(value_head=True).to(device)
-    #opponents = [
-    #    load_frozen_model('CNN-Mk4:selfsolo/0102.pth').to(device)
-    #]
-    #set_params(opponent_temperature=1.0)
-    #train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=250)
+    model = Connect4MLP3().to(device)
+    opponents = [
+        load_frozen_model('CNN-Mk4:model_B_5.pth').to(device)
+    ]
+    set_params(opponent_temperature=1.0)
+    train_against_opponents(model, opponents, batches_per_epoch=10, games_per_batch=250)
 
     #model = Connect4CNN_Mk4(value_head=True).to(device)
     ##model_improver = lambda m: RolloutModel(m, width=3, depth=4)
@@ -676,5 +675,5 @@ if __name__ == "__main__":
     #league = League(model_names=None, dir="selfsolo", model_string="CNN-Mk4", device=device)
     #self_play_with_league(model, league, win_threshold=0.55, model_improver=model_improver, batches_per_epoch=20, games_per_batch=100)
 
-    ping_pong_training(Connect4CNN_Mk4(value_head=True).to(device), 'model_A.pth', Connect4CNN_Mk4(value_head=True).to(device), 'model_B.pth',
-        games_per_batch=200, batches_per_epoch=10, learning_rate=LEARNING_RATE, win_threshold=0.52)
+    #ping_pong_training(Connect4CNN_Mk4(value_head=True).to(device), 'model_A.pth', Connect4CNN_Mk4(value_head=True).to(device), 'model_B.pth',
+    #    games_per_batch=200, batches_per_epoch=10, learning_rate=LEARNING_RATE, win_threshold=0.52)
