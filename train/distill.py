@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 
-from main import play_multiple_against_model
+from main import play_multiple_against_model, augment_symmetry
 from stats import BatchStats, UpdatablePlot
+from alpha import play_both_sides
 
 def distill(teacher, student, optimizer, num_batches: int, batch_size: int = 50):
     """
@@ -22,11 +23,16 @@ def distill(teacher, student, optimizer, num_batches: int, batch_size: int = 50)
 
     stats = BatchStats(["policy_loss", "value_loss", "total_loss"])
     plot = UpdatablePlot(labels=[['Policy loss', 'Value loss'],
-                                 ['Total loss', None]], show_last_n=200)
+                                 ['Total loss', None]], show_last_n=num_batches)
 
     for i in range(num_batches):
         # Generate games using the teacher model
-        states, actions, rewards, done, wr = play_multiple_against_model(teacher, teacher, batch_size, augment_sym=True)
+        #states, _, _, _, _ = play_multiple_against_model(teacher, teacher, batch_size, augment_sym=True)
+
+        # Generate games using the teacher model
+        states, actions, outcomes, _ = play_both_sides(teacher, num_games=batch_size)
+        done_dummy = torch.zeros((1,))
+        states, actions, outcomes, done_dummy = augment_symmetry(states, actions, outcomes, done_dummy)
 
         # Teacher model outputs
         with torch.no_grad():
@@ -44,7 +50,7 @@ def distill(teacher, student, optimizer, num_batches: int, batch_size: int = 50)
         value_loss = F.mse_loss(student_values.squeeze(-1), teacher_values.squeeze(-1), reduction='mean')
 
         # Total loss
-        total_loss = policy_loss + 0.5 * value_loss
+        total_loss = policy_loss + 1.0 * value_loss
 
         losses = (policy_loss.item(), value_loss.item(), total_loss.item())
         stats.add("policy_loss", losses[0])
@@ -58,7 +64,7 @@ def distill(teacher, student, optimizer, num_batches: int, batch_size: int = 50)
         total_loss.backward()
         optimizer.step()
 
-        print(f"Batch {i}/{num_batches} done. Policy Loss: {losses[0]:.4f}, Value Loss: {losses[1]:.4f}")
+        print(f"Batch {i}/{num_batches} done. {states.shape[0]} samples. Policy Loss: {losses[0]:.4f}, Value Loss: {losses[1]:.4f}")
 
 import click
 
@@ -76,7 +82,8 @@ def main_run(teacher, student, num_batches=250, batch_size=50, lr=1e-3):
     teacher = load_frozen_model(teacher).to(device)
     #student = load_frozen_model("CNN-Mk4:best_cp.pth")
     student = load_frozen_model(student).to(device)
-    optimizer = torch.optim.AdamW(student.parameters(), lr=lr)
+    #optimizer = torch.optim.AdamW(student.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(student.parameters(), lr=lr)
 
     distill(teacher, student, optimizer, num_batches=num_batches, batch_size=batch_size)
     # Save the distilled student model
