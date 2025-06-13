@@ -118,6 +118,59 @@ class Connect4MLP(nn.Module):
         return x
 
 
+class Connect4MLP3(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Flatten(),
+            #
+            nn.Linear(ROWS * COLS, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, 256, bias=False),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            #
+            nn.Linear(256, COLS + 1),
+        )
+
+    def forward(self, x):
+        # Store original shape and determine batch size
+        original_shape = x.shape
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+
+        x = self.layers(x.float())
+
+        # If the original input was a single instance, remove the batch dimension
+        if len(original_shape) == 2:
+            return x[0, :-1], torch.tanh(x[0, -1])
+        else:
+            return x[:, :-1], torch.tanh(x[:, -1])
+
+
+
 class RandomConnect4(nn.Module):
     def __init__(self, output_size=OUTPUT_SIZE):
         super().__init__() # Initialize the parent nn.Module class
@@ -971,6 +1024,9 @@ def load_frozen_model(name):
     elif name == "SimpleMLP":
         model = SimpleMLPModel()
         return restore_model(model, "last_cp.pth")
+    elif name == 'MLP3':
+        model = Connect4MLP3()
+        return restore_model(model, "mlp3.pth")
     elif name == 'CNN-MLP':
         model = Connect4CNN_MLP(num_filters1=32, num_filters2=64, hidden_fc_size=128, num_hidden_layers=3)
         return restore_model(model, 'model-cnnmlp.pth')
